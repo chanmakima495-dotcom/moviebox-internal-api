@@ -4,6 +4,12 @@ A high-performance, browser-native streaming dashboard that reverse-engineers th
 
 ---
 
+## 📱 Native Android Client
+
+For a native mobile experience, check out [Genga-World](https://github.com/solo12345689/Genga-World) — a native Android application built using Jetpack Compose that integrates with this internal API to deliver the streaming platform on mobile devices.
+
+---
+
 ## 📐 Architecture Overview
 
 ```
