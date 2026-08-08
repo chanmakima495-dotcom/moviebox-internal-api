@@ -1491,7 +1491,7 @@ def toggle_watchlist(subject_id: str, active: bool, subject_type: int = 1, sessi
     s = get_session(session_id)
     if s["auth"].is_guest_mode:
         raise HTTPException(status_code=401, detail="Please Sign In to manage your watchlist.")
-    action = 1 if active else 0
+    action = 1 if active else 2
     res = s["user"].toggle_watchlist(subject_id, action=action, subject_type=subject_type)
     return {"status": "success", "raw": res}
 
