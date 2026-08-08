@@ -55,10 +55,18 @@ class MovieBoxContent:
 
     def get_home_list(self, category_id: int = 1, page: int = 1) -> Dict:
         """Fetches content for Home sections (Trending, Movie, Game, etc.) via POST."""
+        category_map = {
+            1: "trending",
+            2: "movie",
+            3: "tv",
+            4: "ugc",
+            5: "sports"
+        }
+        category_type = category_map.get(category_id, "trending")
         return self.client.request(
             "POST",
-            "/home/v2/get-list",
-            data={"categoryId": category_id, "page": page, "pageSize": 24}
+            "/wefeed-mobile-bff/subject-api/genre-top",
+            data={"type": category_type, "page": page, "perPage": 24}
         )
 
     def get_rankings(self, path_variant: str = "/wefeed-mobile-bff/tab/ranking-list", tab_id: int = 1) -> Dict:

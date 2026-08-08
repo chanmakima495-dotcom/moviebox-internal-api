@@ -34,6 +34,7 @@ Thumbs.db
 *.apk.jadx
 *.jadx
 moviebox_decoded-apktool/
+moviebox-apktool/
 app-jadx-gui/
 
 # Testing & Temp files in root

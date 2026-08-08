@@ -16,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <Script src="https://cdn.jsdelivr.net/npm/hls.js@latest" strategy="beforeInteractive" />
         <Script src="https://cdn.jsdelivr.net/npm/dashjs@latest/dist/dash.all.min.js" strategy="beforeInteractive" />

@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MovieBoxClient:
-    BASE_URL = "https://api6.aoneroom.com"
+    BASE_URL = "https://api.inmoviebox.com"
 
     def __init__(self, auth: Optional[MovieBoxAuth] = None):
         if auth is None:
@@ -34,9 +34,8 @@ class MovieBoxClient:
             "Accept": "application/json",
             "X-Sign-Version": "2.0"
         }
-        # These IDs are extracted from official AndroidManifest
-        headers["appid"] = "302770f8bb6543ce8bdff585943a1eca"
-        headers["appkey"] = "a9d263ae575d4f5d94eab086a150c67e"
+        # Fixed appid to match gateway_sdk initialization parameter and removed appkey (which causes 440)
+        headers["appid"] = "4U01pxRu278GqCZKY9"
         headers["region"] = "IN"
         headers["lang"] = "en"
         headers["os"] = "android"
@@ -95,6 +94,7 @@ class MovieBoxClient:
             user_id = data.get("userId")
             if token:
                 self.auth.update_session(token, user_id, data)
+                self.auth.is_guest_mode = False
                 return {"status": "success", "user": data}
             
         msg = res.get("msg") or "Unknown API Error"
@@ -125,7 +125,13 @@ class MovieBoxClient:
         logger.info(f"Register Response: {res}")
         
         if res.get("code") in [200, 0] and "data" in res:
-            return {"status": "success", "user": res["data"]}
+            data = res["data"]
+            token = data.get("token")
+            user_id = data.get("userId")
+            if token:
+                 self.auth.update_session(token, user_id, data)
+            self.auth.is_guest_mode = False
+            return {"status": "success", "user": data}
             
         msg = res.get("msg") or "Registration Failed"
         return {"status": "error", "message": msg, "res": res}
@@ -259,6 +265,23 @@ class MovieBoxClient:
                         timeout=kwargs.get("timeout", 15)
                     )
             
+            # Dynamic Token Refresh via x-user header (allocates guest/refreshed tokens)
+            x_user = None
+            for k, v in response.headers.items():
+                if k.lower() == 'x-user':
+                    x_user = v
+                    break
+            if x_user:
+                try:
+                    user_data = json.loads(x_user)
+                    token = user_data.get("token")
+                    user_id = user_data.get("userId")
+                    if token:
+                        logger.info(f"Dynamically updated session token from response header: {token[:30]}... UID: {user_id}")
+                        self.auth.update_session(token, user_id, user_data)
+                except Exception as ex:
+                    logger.error(f"Failed to parse x-user header: {ex}")
+
             # Gracefully handle non-JSON responses (e.g. "ok")
             try:
                 return response.json()

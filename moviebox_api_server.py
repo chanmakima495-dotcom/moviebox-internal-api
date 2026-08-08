@@ -15,7 +15,6 @@ import uuid
 import re
 from urllib.parse import quote
 from moviebox_api import MovieBoxClient, MovieBoxAuth, MovieBoxContent, MovieBoxStream, MovieBoxUser
-from moviebox_api.auth import DEFAULT_GUEST_TOKEN
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +35,24 @@ app.add_middleware(
 # session_id -> {auth, client, content, stream, user}
 sessions: Dict[str, Dict] = {}
 
+HISTORY_FILE = "local_history.json"
+
+def load_local_history() -> dict:
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load local history: {e}")
+    return {"default": [], "blacklist": []}
+
+def save_local_history(h: dict):
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(h, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Failed to save local history: {e}")
+
 def get_session(session_id: Optional[str] = None):
     # Check if session exists
     if session_id and session_id in sessions:
@@ -54,6 +71,26 @@ def get_session(session_id: Optional[str] = None):
         "user": MovieBoxUser(client)
     }
     logger.info(f"Created new session: {sid}")
+    
+    # Bootstrap fresh guest credentials by calling a public endpoint
+    try:
+        logger.info(f"Bootstrapping guest credentials for session {sid}...")
+        # X-Client-Status 1 forces guest token allocation from x-user response header
+        auth.is_logged_in = False
+        res = MovieBoxContent(client).get_categories(category_id=1, page=1)
+        # Scan response headers for x-user guest token in the client interceptor response update
+        for k, v in client.session.headers.items():
+            pass # client.session has updated or the client's auth object has updated
+        # Ensure we toggle auth.is_logged_in back to True (which uses Authorization: Bearer <Token>)
+        # so that details/play-info endpoints can use the bearer token
+        if auth.token and auth.token != "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjcwNjU5NDg0MTAyMTM4MTYyMzIsInV0cCI6MSwiZXhwIjoxNzkxNzMyMjMzLCJpYXQiOjE3ODM5NTU5MzN9.7iyEzTj4vWAbOF0oXwNnZ0p3Nc1QaO6K9eMiGFyVfGs":
+            logger.info(f"Bootstrap guest token success: {auth.token[:30]}... UID: {auth.user_id}")
+            auth.is_logged_in = True
+        else:
+            logger.warning("Bootstrap guest token did not update credentials.")
+    except Exception as e:
+        logger.error(f"Failed to bootstrap guest session: {e}")
+        
     return sessions[sid]
 
 class LoginRequest(BaseModel):
@@ -691,7 +728,7 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
     
     # Logic to force status sync: Check the actual list if cloud detail is stale
     is_fav = False
-    if s["auth"].token != DEFAULT_GUEST_TOKEN:
+    if not s["auth"].is_guest_mode:
         try:
             wl_res = s["user"].get_watchlist(page=1, per_page=50) # Check first page of favorites
             wl_items = wl_res.get("data", {}).get("items") or wl_res.get("data", {}).get("list") or []
@@ -826,32 +863,42 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
     res_se = None if is_movie else season
     res_ep = None if is_movie else episode
     
-    # PRE-FLIGHT: Force Carrier 301 for regional titles (fixes 407 restricted issues for guests)
-    if not resource_id and int(subject_id) > 4000000000000000000:
-        logger.info(f"Regional title detected by ID range. Escalating to Carrier 301 for {subject_id}")
-        c_res = s["client"].request('POST', '/index/video/v_detail', data={'subjectId': subject_id, 'carrier': '301'})
-        c_data = c_res.get("data")
-        if isinstance(c_data, dict):
-            c_st = c_data.get("streamList") or []
-            if c_st:
-                r3 = c_st[0]
-                logger.info(f"CARRIER 301 RECOVERY SUCCESS: {r3.get('url')[:60]}...")
-                # Deep cookie recovery from carrier response
-                recovery_cookie = c_data.get("signCookie") or r3.get("signCookie") or c_res.get("signCookie") or ""
-                return {
-                    "code": 0,
-                    "url": r3.get("url"),
-                    "quality": r3.get("quality"),
-                    "cookie": recovery_cookie,
-                    "duration": r3.get("duration", 0),
-                    "title": subject_detail.get("title", "")
-                }
-        else:
-            logger.info(f"Carrier 301 returned non-dict data: {type(c_data)}")
 
     res = s["stream"].get_play_info(subject_id, season=res_se, episode=res_ep, resource_id=resource_id)
     data = res.get("data", {})
     streams = data.get("streamList") or data.get("streams") or []
+    
+    # Fallback to resourceDetectors inside movie/show detail if no streams found in play-info
+    if not streams:
+        logger.info(f"No streams from play-info. Checking resourceDetectors for subject {subject_id}...")
+        try:
+            detectors = subject_detail.get("resourceDetectors") or []
+            for det in detectors:
+                if resource_id and str(det.get("resourceId")) != str(resource_id):
+                    continue
+                res_list = det.get("resolutionList") or []
+                for res_item in res_list:
+                    if not is_movie:
+                        item_se = res_item.get("se") or res_item.get("season")
+                        item_ep = res_item.get("ep") or res_item.get("episode")
+                        if item_se is not None and item_ep is not None:
+                            if int(item_se) != int(season) or int(item_ep) != int(episode):
+                                continue
+                    stream_url = res_item.get("resourceLink") or res_item.get("downloadUrl")
+                    if stream_url:
+                        streams.append({
+                            "url": stream_url,
+                            "quality": f"{res_item.get('resolution')}p" if res_item.get("resolution") else "Auto",
+                            "signCookie": det.get("signCookie") or res_item.get("signCookie") or "",
+                            "codec": res_item.get("codecName") or det.get("codecName") or "",
+                            "id": res_item.get("resourceId") or det.get("resourceId") or "",
+                            "duration": res_item.get("duration") or det.get("duration") or 0
+                        })
+            if streams:
+                logger.info(f"Recovered {len(streams)} streams directly from details resourceDetectors.")
+        except Exception as e:
+            logger.error(f"Error extracting from resourceDetectors: {e}")
+            
     # signCookie can be in root, in data, or in the session cookies
     # FALLBACK: If all else fails, the signCookie is often just the user token
     global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
@@ -878,16 +925,13 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
     
     prioritized_streams = sorted(streams, key=prioritize_h264)
 
+    # Pass 1: Try to find a playable non-HEVC stream
     for st in prioritized_streams:
         url = st.get("url")
         if not url: continue
-        
-        # FINAL BLOCKADE: If the only stream is H265, we must search other clusters
         if any(bad in url.lower() for bad in ["h265", "x265", "hev1"]):
-            logger.info(f"Skipping H265/HEVC stream: browser will not play this ({url})")
             continue
-            
-        cookie = global_cookie or st.get("signCookie") or ""
+        cookie = st.get("signCookie") or global_cookie or ""
         try:
             head_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
             if head_res.status_code in [200, 206, 302]:
@@ -895,8 +939,21 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
                 working_cookie = cookie
                 break
         except: continue
-            
-    # SILENT FALLBACK: Cloud Mirror -> Resource Mirror Rotation
+
+    # Pass 2: Fallback to playable HEVC stream if no non-HEVC stream is available
+    if not working_stream:
+        for st in prioritized_streams:
+            url = st.get("url")
+            if not url: continue
+            cookie = st.get("signCookie") or global_cookie or ""
+            try:
+                head_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
+                if head_res.status_code in [200, 206, 302]:
+                    logger.info(f"Using fallback H265/HEVC stream: {url}")
+                    working_stream = st
+                    working_cookie = cookie
+                    break
+            except: continue
     subtitles_source = data.get("subTitleList", [])
     
     # PROIRITY: Resource Mirrors (UGC/Dubs like eyosi_as_iam)
@@ -998,7 +1055,7 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
     if is_hevc and h265_candidate:
         logger.info(f"Detected HEVC/H.265. Directly serving RAW stream for Native Player support...")
         working_stream = h265_candidate
-        working_cookie = global_cookie or working_stream.get("signCookie") or ""
+        working_cookie = working_stream.get("signCookie") or global_cookie or ""
 
     # SECONDARY FALLBACK: API Cluster Rotation
     if not working_stream:
@@ -1071,7 +1128,7 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
     
     if not working_stream and streams:
         working_stream = streams[0]
-        working_cookie = global_cookie or working_stream.get("signCookie") or ""
+        working_cookie = working_stream.get("signCookie") or global_cookie or ""
 
     if not working_stream:
         logger.error(f"RESOLUTION FAILURE: No usable streams found for subject {subject_id}")
@@ -1176,7 +1233,7 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
         "duration": total_duration,
         "subtitles": all_subtitles,
         "subtitle_url": best_sub,
-        "isHls": False, 
+        "isHls": working_stream.get("url", "").lower().endswith(".m3u8") or ".m3u8" in working_stream.get("url", "").lower(), 
         "streamId": working_stream.get("id"),
         "qualityList": list(set([st.get("quality") for st in streams if st.get("quality")])),
         "episode": episode,
@@ -1376,7 +1433,7 @@ def get_history(page: int = 1, session_id: Optional[str] = Cookie(None)):
     combined_history_dict = {str(x.get("subjectId") or x.get("id")): x for x in default_history + user_specific}
     user_history = list(combined_history_dict.values())
     
-    if s["auth"].token != DEFAULT_GUEST_TOKEN:
+    if not s["auth"].is_guest_mode:
         try:
             res = s["user"].get_history(page=page)
             data = res.get("data", {})
@@ -1409,7 +1466,7 @@ def get_history(page: int = 1, session_id: Optional[str] = Cookie(None)):
 @app.get("/watchlist")
 def get_watchlist(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    if s["auth"].token == DEFAULT_GUEST_TOKEN:
+    if s["auth"].is_guest_mode:
         return {"code": 0, "data": {"list": []}}
     try:
         res = s["user"].get_watchlist(page=page)
@@ -1423,7 +1480,7 @@ def get_watchlist(page: int = 1, session_id: Optional[str] = Cookie(None)):
 @app.post("/history/delete/{subject_id}")
 def delete_history_item(subject_id: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    if s["auth"].token == DEFAULT_GUEST_TOKEN:
+    if s["auth"].is_guest_mode:
         raise HTTPException(status_code=401, detail="Please Sign In to manage your history.")
     res = s["user"].report_history(subject_id, 0, 0, status=0) 
     return {"status": "success", "raw": res}
@@ -1432,7 +1489,7 @@ def delete_history_item(subject_id: str, session_id: Optional[str] = Cookie(None
 @app.post("/watchlist/toggle")
 def toggle_watchlist(subject_id: str, active: bool, subject_type: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    if s["auth"].token == DEFAULT_GUEST_TOKEN:
+    if s["auth"].is_guest_mode:
         raise HTTPException(status_code=401, detail="Please Sign In to manage your watchlist.")
     action = 1 if active else 0
     res = s["user"].toggle_watchlist(subject_id, action=action, subject_type=subject_type)
@@ -1447,7 +1504,7 @@ class ProgressReport(BaseModel):
 @app.post("/history/progress")
 def report_progress(req: ProgressReport, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    if s["auth"].token == DEFAULT_GUEST_TOKEN:
+    if s["auth"].is_guest_mode:
         return {"status": "success"}
     return s["user"].report_history(req.subject_id, req.progress_ms, req.total_ms, req.status)
 
@@ -1456,7 +1513,7 @@ def launch_player(player: str, url: str, cookie: Optional[str] = None, subject_i
     s = get_session(session_id)
     # Record History!
     if subject_id:
-        if s["auth"].token != DEFAULT_GUEST_TOKEN:
+        if not s["auth"].is_guest_mode:
             try:
                 s["client"].request('POST', '/wefeed-mobile-bff/subject-api/have-seen', data={'subjectId': subject_id})
             except: pass
@@ -1660,6 +1717,67 @@ async def subtitle_proxy(u: str):
     async with httpx.AsyncClient(verify=False) as client:
         res = await client.get(u, headers={"User-Agent": "ExoPlayerLib/2.18.7"}, follow_redirects=True)
         return Response(content=res.content, media_type="text/vtt", headers={"Access-Control-Allow-Origin": "*"})
+
+@app.post("/launch-player")
+def launch_player(
+    player: str = Query(...),
+    url: str = Query(...),
+    cookie: Optional[str] = Query(None),
+    subject_id: Optional[str] = Query(None),
+    season: Optional[int] = Query(None),
+    episode: Optional[int] = Query(None),
+    title: Optional[str] = Query(None),
+    cover: Optional[str] = Query(None),
+    start_time: Optional[int] = Query(0),
+    subtitle_url: Optional[str] = Query(None),
+    duration: Optional[int] = Query(0)
+):
+    logger.info(f"Launching external player: {player} for url: {url[:100]}... (start_time: {start_time})")
+    cmd = []
+    if player.lower() == "mpv":
+        cmd = ["mpv", url]
+        if title:
+            display_title = title
+            if season and episode:
+                display_title += f" S{season}E{episode}"
+            cmd.append(f"--title={display_title}")
+        if start_time and start_time > 0:
+            cmd.append(f"--start={start_time}")
+        if subtitle_url:
+            cmd.append(f"--sub-file={subtitle_url}")
+        cmd.append("--user-agent=ExoPlayerLib/2.18.7")
+        if cookie:
+            cmd.append(f"--http-header-fields=Cookie: {cookie}")
+    elif player.lower() == "vlc":
+        cmd = ["vlc", url]
+        if title:
+            display_title = title
+            if season and episode:
+                display_title += f" S{season}E{episode}"
+            cmd.extend(["--meta-title", display_title])
+        if start_time and start_time > 0:
+            cmd.extend(["--start-time", str(start_time)])
+        if subtitle_url:
+            cmd.extend(["--sub-file", subtitle_url])
+        cmd.extend(["--http-user-agent", "ExoPlayerLib/2.18.7"])
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported player: {player}")
+        
+    try:
+        creation_flags = 0
+        if os.name == 'nt':
+            creation_flags = 0x00000008 | 0x00000200
+        logger.info(f"Executing: {' '.join(cmd)}")
+        subprocess.Popen(cmd, creationflags=creation_flags, close_fds=True)
+        return {"status": "success", "message": f"Launched {player}"}
+    except Exception as e:
+        logger.error(f"Failed to launch player: {e}")
+        try:
+            subprocess.Popen(cmd, shell=True)
+            return {"status": "success", "message": f"Launched {player} (fallback shell)"}
+        except Exception as e2:
+            logger.error(f"Fallback launch failed: {e2}")
+            raise HTTPException(status_code=500, detail=f"Could not launch {player}: {str(e2)}")
 
 if __name__ == "__main__":
     # DISABLE RELOAD: Prevents Windows-specific crash loops during active streaming/editing

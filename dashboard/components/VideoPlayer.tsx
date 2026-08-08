@@ -50,17 +50,17 @@ const VideoPlayer = memo(({
             else up.searchParams.delete('start_time');
             return up.toString();
         }
-        let pUrl = `http://localhost:8000/proxy-media?url=${encodeURIComponent(cleanUrl)}&cookie=${encodeURIComponent(cookieStr)}`;
-        if (start && start > 0) pUrl += `&start_time=${start}`;
-        return pUrl;
+        return cleanUrl;
     };
 
     const initialUrl = getProxiedUrl(url, cookie, startTime);
     seekOffset.current = startTime;
+    const inferredType = initialUrl.includes('.mpd') || initialUrl.includes('.manifest') ? 'mpd' : (initialUrl.includes('.m3u8') ? 'm3u8' : 'mp4');
 
     const art = new Artplayer({
       container: artRef.current,
       url: initialUrl,
+      type: inferredType,
       volume: 1.0,
       isLive: false,
       muted: false,
@@ -90,16 +90,66 @@ const VideoPlayer = memo(({
         escape: false
       },
       customType: {
-        m3u8: function (video: HTMLMediaElement, url: string) {
+        m3u8: function (video: HTMLMediaElement, url: string, art: any) {
           const Hls = window.Hls;
           if (Hls && Hls.isSupported()) {
-            const hls = new Hls();
+            if (art.hls) art.hls.destroy();
+            const hls = new Hls({
+              xhrSetup: function (xhr: any) {
+                xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
+                if (cookie) {
+                  xhr.setRequestHeader('Cookie', cookie);
+                }
+              }
+            });
+            hls.on(Hls.Events.ERROR, function (event: any, data: any) {
+              if (data.fatal) {
+                console.warn("HLS fatal error:", data);
+                if (onError) onError(data);
+              }
+            });
             hls.loadSource(url);
             hls.attachMedia(video);
+            art.hls = hls;
+            art.on('destroy', () => hls.destroy());
           } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = url;
           }
         },
+        mpd: function (video: HTMLMediaElement, url: string, art: any) {
+          const dashjs = window.dashjs;
+          if (dashjs) {
+            if (art.dash) {
+              try { art.dash.destroy(); } catch(e) {}
+            }
+            const player = dashjs.MediaPlayer().create();
+            player.extend("RequestModifier", function () {
+              return {
+                modifyRequestHeader: function (xhr: any) {
+                  xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
+                  if (cookie) {
+                    xhr.setRequestHeader('Cookie', cookie);
+                  }
+                  return xhr;
+                },
+                modifyRequestURL: function (url: string) {
+                  return url;
+                }
+              };
+            }, true);
+            player.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
+              console.warn("DashJS error:", e);
+              if (onError) onError(e);
+            });
+            player.initialize(video, url, true);
+            art.dash = player;
+            art.on('destroy', () => {
+              try { player.destroy(); } catch(e) {}
+            });
+          } else {
+            video.src = url;
+          }
+        }
       },
     });
 
@@ -187,6 +237,16 @@ const VideoPlayer = memo(({
         // art.video.currentTime is intercepted for transcoded streams, so this auto-reports the correct virtual time
         onProgress(art.video.currentTime);
       }
+    });
+
+    art.on('video:error', (e) => {
+      console.warn("Video element error detected inside VideoPlayer component:", e);
+      if (onError) onError(e);
+    });
+
+    art.on('error', (err) => {
+      console.warn("Artplayer general error detected inside VideoPlayer component:", err);
+      if (onError) onError(err);
     });
 
     return () => {

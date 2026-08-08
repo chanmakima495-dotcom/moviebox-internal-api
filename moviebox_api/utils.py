@@ -32,8 +32,8 @@ def generate_client_token() -> str:
     Format: <timestamp>,<md5(reversed_timestamp)>
     """
     ts = str(int(time.time() * 1000))
-    rev_ts = ts[::-1]
-    return f"{ts},{md5_hex(rev_ts)}"
+    reversed_ts = ts[::-1]
+    return f"{ts},{md5_hex(reversed_ts)}"
 
 def generate_tr_signature(method: str, url: str, body_data: str = "", timestamp: int = None) -> str:
     """
@@ -97,16 +97,16 @@ def get_default_client_info() -> dict:
     device_id = "86820305" + "".join(random.choices("0123456789", k=7))
     
     return {
-        "package_name": "com.movieboxpro.android",
-        "version_name": "16.2.1",
-        "version_code": 16210,
+        "package_name": "com.community.mbox.in",
+        "version_name": "3.0.16.0804.03",
+        "version_code": 50020116,
         "os": "android",
-        "os_version": "12",
+        "os_version": "14",
         "install_ch": "googleplay",
         "device_id": device_id,
         "install_store": "googleplay",
         "gaid": "",
-        "brand": "google",
+        "brand": "Google",
         "model": "Pixel 6",
         "system_language": "en",
         "net": "wifi",

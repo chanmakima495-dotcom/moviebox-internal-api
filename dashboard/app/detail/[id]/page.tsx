@@ -359,7 +359,7 @@ export default function MovieDetail() {
                 autoplay: true,
                 muted: true,
                 autoSize: true,
-                type: streamInfo.isHls ? 'm3u8' : 'mp4',
+                type: streamInfo.url && (streamInfo.url.includes('.mpd') || streamInfo.url.includes('.manifest')) ? 'mpd' : (streamInfo.isHls ? 'm3u8' : 'mp4'),
                 duration: streamInfo.duration || 3600,
                 title: movie.title,
                 poster: movie.poster || movie.cover,
@@ -413,6 +413,39 @@ export default function MovieDetail() {
                       video.src = url;
                     }
                   },
+                  mpd: function (video: HTMLVideoElement, url: string, art: any) {
+                    const dashjs = (window as any).dashjs;
+                    if (dashjs) {
+                      if (art.dash) {
+                        try { art.dash.destroy(); } catch(e) {}
+                      }
+                      const player = dashjs.MediaPlayer().create();
+                      
+                      // Set request modifier to append headers (User-Agent and Cookie)
+                      player.extend("RequestModifier", function () {
+                          return {
+                              modifyRequestHeader: function (xhr: any) {
+                                  xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
+                                  if (streamInfo.cookie) {
+                                      xhr.setRequestHeader('Cookie', streamInfo.cookie);
+                                  }
+                                  return xhr;
+                              },
+                              modifyRequestURL: function (url: string) {
+                                  return url;
+                              }
+                          };
+                      }, true);
+                      
+                      player.initialize(video, url, true);
+                      art.dash = player;
+                      art.on('destroy', () => {
+                        try { player.destroy(); } catch(e) {}
+                      });
+                    } else {
+                      video.src = url;
+                    }
+                  }
                 },
               }}
               className="w-full h-full"

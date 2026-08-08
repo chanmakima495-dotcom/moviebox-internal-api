@@ -21,12 +21,16 @@ The API servers utilize strict header-based filtering to block unauthorized web 
 | `X-Play-Mode` | `2` | Configures playback stream resolving context. |
 | `Authorization` | `Bearer <Token>` | User session token (refreshed via response `x-user`). |
 
-### **Cryptographic Token Handshake (`X-Client-Token`)**
-To authorize requests without an active login token, the client generates a dynamic signature header via an interceptor (`com.transsion.baselib.net.f`):
-1. Get the current Unix epoch timestamp in milliseconds: `timestamp = str(int(time.time() * 1000))`
-2. Reverse the timestamp characters: `reversed = timestamp[::-1]`
-3. Calculate the MD5 hex digest of the reversed timestamp: `hash = md5(reversed)`
-4. Concatenate to build the token: `X-Client-Token: timestamp + "," + hash`
+### **Cryptographic Token Handshake (`X-Client-Token` & Dynamic Guest Bootstrapping)**
+To authorize requests without an active login session, the client must perform a dynamic guest bootstrapping handshake:
+1. **Dynamic Guest Bootstrap Handshake**: Pinging `/wefeed-mobile-bff/tab-operating?host=api.inmoviebox.com&page=1&pageSize=24&tabId=1` with a formatted anonymous signature first.
+2. **Dynamic Header Token Extraction**: The API gateway interceptor will evaluate the anonymous request and issue a dynamic guest session token returned in the headers (e.g. `x-user`).
+3. **Session Bearer Injection**: This dynamic token is captured in memory and injected as a `Bearer <token>` inside the `Authorization` header for all subsequent content metadata queries, completely replacing static guest tokens.
+4. **Alternative Signature Generation (`X-Client-Token`)**:
+   * Get the current Unix epoch timestamp in milliseconds: `timestamp = str(int(time.time() * 1000))`
+   * Reverse the timestamp characters: `reversed = timestamp[::-1]`
+   * Calculate the MD5 hex digest of the reversed timestamp: `hash = md5(reversed)`
+   * Concatenate to build the token: `X-Client-Token: timestamp + "," + hash`
 
 ### **Cryptographic App Signature (`x-tr-signature`)**
 For requests going to the Android BFF endpoints, the server validates a signature of the HTTP request payload and headers:
@@ -126,7 +130,7 @@ The application primarily communicates with clusters like `api6.aoneroom.com` an
 
 ---
 
-## 3. The Authentication Handshake (Regional Escalation)
+## 3. The Authentication Handshake (Regional Escalation & Web Playback)
 
 MovieBox utilizes a multi-phase resolution strategy to bypass regional geofencing and copyright-restricted mirrors (especially for Hindi/Hindi-Dubbed titles).
 
@@ -136,15 +140,24 @@ For titles that return `code: 407` (Restricted) or empty `streamList` on primary
 *   **Payload**: `{'subjectId': ID, 'carrier': '301', 'quality': '720p'}`
 *   **Logic**: This bypasses the BFF layer and hits the legacy resolution engine, which often yields raw MP4 mirrors that are geofence-ignorant.
 
-### **Phase 2: CloudFront Signed Cookies**
+### **Phase 2: CloudFront Signed Cookies & Prioritization**
 Regional DASH manifests (e.g., `sacdn2.hakunaymatata.com`) require a three-part CloudFront signature passed via the `Cookie` header:
 1.  `CloudFront-Policy`
 2.  `CloudFront-Signature`
 3.  `CloudFront-Key-Pair-Id`
-**CRITICAL**: These must be preserved with exact whitespace and semicolons. Corruption of these tokens results in an immediate 403 Forbidden.
+*   **CRITICAL**: When resolving streams, the client MUST prioritize the stream-specific `signCookie` CloudFront triple returned from the API over the global user JWT token. Failing to do so (or passing the JWT token to the CDN) yields a `403 Forbidden` error.
+*   **Web Integration**: Web players (e.g., `hls.js` and `dash.js`) must inject these cookies into all segment and manifest requests.
+    *   **HLS (`hls.js`)**: Configured via the `xhrSetup` handler: `xhr.setRequestHeader('Cookie', cookie)`.
+    *   **DASH (`dash.js`)**: Configured via extending the `RequestModifier` class: `xhr.setRequestHeader('Cookie', cookie)`.
 
 ### **Phase 3: GSLB (Global Server Load Balancing) Redirect**
 The app performs a HEAD request (Handshake) to the CDN before playback. This triggers the issuance of a `signCookie` session token which validates the player's IP against the temporary media URL.
+
+### **Phase 4: H.265 (HEVC) Auto-Failover & Local Transcoding**
+Many regional streams are only served in the HEVC (H.265) compression format, which standard web browsers cannot natively decode.
+*   **Browser Error Capture**: The web player registers event listeners to capture fatal codec playback failures (`dashjs.MediaPlayer.events.ERROR` or `Hls.Events.ERROR`).
+*   **Transcode Failover Pipe**: On capture, the player automatically reroutes the stream source to the backend transcoding pipeline: `/play-compat/{id}?season={season}&episode={episode}&quality={quality}`.
+*   **Subprocess Transcoding**: The backend uses an asynchronous `ffmpeg` subprocess to dynamically transcode the HEVC stream into a standard H.264 stream in real-time, allowing browser playback on any device.
 
 ---
 

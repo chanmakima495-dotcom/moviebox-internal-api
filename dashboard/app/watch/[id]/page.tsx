@@ -7,7 +7,8 @@ import axios from 'axios';
 import { 
   ChevronLeft, Settings, Maximize, Volume2, 
   Play, Pause, SkipForward, Info, Download,
-  Activity, ShieldCheck, Zap, Monitor
+  Activity, ShieldCheck, Zap, Monitor,
+  User, LogOut, UserPlus, Send
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 
@@ -43,13 +44,83 @@ export default function WatchPage() {
   const [isTranscoding, setIsTranscoding] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
+  // Auth State
+  const [userInfo, setUserInfo] = useState<any>(null);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [loginForm, setLoginForm] = useState({ account: '', password: '', otp: '' });
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpLoading, setOtpLoading] = useState(false);
+
   useEffect(() => {
     if (id) {
        fetchStream();
        fetchMetadata();
        fetchSubtitles();
+       checkAuth();
     }
   }, [id, season, episode, selectedQuality]);
+
+  const checkAuth = async () => {
+    try {
+      const res = await movieApi.getUserInfo();
+      if (res.logged_in) {
+        setUserInfo(res.user);
+      } else {
+        setUserInfo(null);
+      }
+    } catch (e) {}
+  };
+
+  const handleRequestOtp = async () => {
+     if (!loginForm.account) return alert('Email/Phone is required');
+     setOtpLoading(true);
+     try {
+        const res = await movieApi.requestOtp(loginForm.account, 1, authMode === 'register' ? 1 : 2);
+        if (res.status === 'success') {
+           setOtpSent(true);
+           alert('Verification code sent! Please check your inbox/SMS.');
+        }
+     } catch (err: any) {
+        alert(err.response?.data?.detail || 'Failed to send OTP');
+     }
+     setOtpLoading(false);
+  };
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    try {
+      if (authMode === 'login') {
+        const res = await movieApi.login(loginForm.account, loginForm.password);
+        if (res.status === 'success') {
+          setUserInfo(res.user);
+          setShowLoginModal(false);
+          fetchStream();
+        }
+      } else {
+        if (!loginForm.otp) return alert('Verification code is required for registration');
+        const res = await movieApi.register(loginForm.account, loginForm.password, loginForm.otp);
+        if (res.status === 'success') {
+          alert('Registration successful! Please login.');
+          setAuthMode('login');
+          setOtpSent(false);
+        }
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.detail || 'Authentication failed');
+    }
+    setLoginLoading(false);
+  };
+
+  const handleLogout = async () => {
+     try {
+        await movieApi.logout();
+        setUserInfo(null);
+        fetchStream();
+     } catch (e) {}
+  };
 
   const fetchMetadata = async () => {
     try {
@@ -61,7 +132,7 @@ export default function WatchPage() {
   const normalizeSubtitle = (sub: any) => {
     const rawUrl = sub.url || sub.subPath || '';
     // Proxy ALL subtitles to avoid taining the canvas during screenshots/thumbnails
-    const proxiedUrl = rawUrl ? `http://localhost:8000/proxy-media?url=${encodeURIComponent(rawUrl)}&cookie=` : '';
+    const proxiedUrl = rawUrl ? `http://localhost:8000/sub-proxy?u=${encodeURIComponent(rawUrl)}` : '';
     
     return {
         sid: sub.id || sub.sid || Math.random().toString(),
@@ -155,7 +226,10 @@ export default function WatchPage() {
   };
 
   const launchExternalPlayer = async (player: 'vlc' | 'mpv') => {
-    if (!streamData?.url) return;
+    if (!streamData?.url) {
+        alert("No active stream resolved. If this is a VIP show, please Sign In first.");
+        return;
+    }
     try {
         let startTime = resumeTime;
         let subUrl: string | undefined = undefined;
@@ -219,9 +293,29 @@ export default function WatchPage() {
                 </div>
             </div>
 
-            <div className="hidden md:flex flex-col items-end gap-2 text-right">
-                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Global Load Balancer</p>
-                <p className="px-4 py-2 bg-green-500/10 border border-green-500/20 text-green-500 rounded-xl text-[10px] font-black uppercase tracking-widest backdrop-blur-3xl">Cluster-6 Online</p>
+            <div className="flex flex-col items-end gap-3 text-right">
+                {userInfo ? (
+                    <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-4 py-2">
+                        <div className="w-6 h-6 rounded-full bg-yellow-500 text-black flex items-center justify-center font-black text-[10px]">
+                           {userInfo.mail ? userInfo.mail[0].toUpperCase() : 'U'}
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">{userInfo.mail || userInfo.phone || 'Member'}</span>
+                        <button onClick={handleLogout} className="p-1 text-zinc-500 hover:text-red-500 transition-colors">
+                           <LogOut className="w-4 h-4" />
+                        </button>
+                    </div>
+                ) : (
+                    <button 
+                       onClick={() => setShowLoginModal(true)}
+                       className="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-black rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-yellow-500/10"
+                    >
+                       Sign In
+                    </button>
+                )}
+                <div className="hidden md:flex flex-col items-end gap-1">
+                    <p className="text-[8px] font-black text-zinc-600 uppercase tracking-widest leading-none">Global Load Balancer</p>
+                    <p className="text-green-500 text-[8px] font-black uppercase tracking-widest leading-none">Cluster-6 Online</p>
+                </div>
             </div>
          </div>
 
@@ -248,9 +342,14 @@ export default function WatchPage() {
                             <div className="space-y-2">
                                 <h3 className="text-xl font-black uppercase italic tracking-tighter text-red-600">Stream Blocked</h3>
                                 <p className="text-[10px] text-zinc-500 font-black uppercase tracking-widest leading-relaxed max-w-xs">
-                                    This title requires a premium session or active login. <br/>
-                                    Please sign in via the dashboard to unlock this mirror.
+                                    This title requires a premium session or active login.
                                 </p>
+                                <button 
+                                   onClick={() => setShowLoginModal(true)}
+                                   className="mt-4 px-8 py-3 bg-yellow-500 hover:bg-yellow-600 text-black rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg"
+                                >
+                                   Sign In Now
+                                </button>
                             </div>
                         </div>
                     )}
@@ -433,6 +532,101 @@ export default function WatchPage() {
                   >
                      Dismiss
                   </button>
+               </div>
+            </div>
+         )}
+         {showLoginModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
+               <div className="absolute inset-0 bg-black/90 backdrop-blur-3xl" onClick={() => setShowLoginModal(false)} />
+               <div className="relative w-full max-w-md bg-zinc-950 border border-white/10 rounded-[3.5rem] p-12 overflow-hidden shadow-2xl flex flex-col text-white">
+                  <div className="text-center mb-10 space-y-2">
+                     <div className="w-16 h-16 bg-yellow-500/10 rounded-3xl flex items-center justify-center mx-auto border border-yellow-500/20">
+                        <UserPlus className="w-8 h-8 text-yellow-500" />
+                     </div>
+                     <h2 className="text-4xl font-black uppercase italic tracking-tighter mt-4">
+                        {authMode === 'login' ? 'Welcome Back' : 'Join the Club'}
+                     </h2>
+                     <p className="text-white/40 text-[10px] font-bold uppercase tracking-[0.3em] mt-2">Personalize Your Cinematic Experience</p>
+                  </div>
+
+                  <form onSubmit={handleAuth} className="space-y-4">
+                     <div className="space-y-1.5">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-white/30 ml-4">Account ID</label>
+                        <div className="relative group">
+                           <User className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20 group-focus-within:text-yellow-500 transition-colors" />
+                           <input 
+                            type="text" 
+                            placeholder="Email or Phone Number"
+                            className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-14 pr-6 text-sm font-bold focus:border-yellow-500/50 focus:bg-white/10 transition-all outline-none"
+                            value={loginForm.account}
+                            onChange={(e) => setLoginForm({ ...loginForm, account: e.target.value })}
+                           />
+                        </div>
+                     </div>
+
+                     <div className="space-y-1.5">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-white/30 ml-4">
+                          {authMode === 'login' ? 'Access Key' : 'Create Password'}
+                        </label>
+                        <div className="relative group">
+                           <Zap className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20 group-focus-within:text-yellow-500 transition-colors" />
+                           <input 
+                            type="password" 
+                            placeholder={authMode === 'login' ? "••••••••••••" : "Choose a secure password"}
+                            className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-14 pr-6 text-sm font-bold focus:border-yellow-500/50 focus:bg-white/10 transition-all outline-none"
+                            value={loginForm.password}
+                            onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                           />
+                        </div>
+                     </div>
+
+                     {authMode === 'register' && (
+                       <div className="space-y-3 pt-2">
+                           <div className="flex items-center gap-2">
+                              <div className="h-px flex-1 bg-white/5" />
+                              <span className="text-[8px] font-black uppercase tracking-widest text-white/10">Verification Zone</span>
+                              <div className="h-px flex-1 bg-white/5" />
+                           </div>
+                           <div className="flex gap-2">
+                             <div className="relative flex-1 group">
+                                <Send className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" />
+                                <input 
+                                  type="text" 
+                                  placeholder="6-Digit OTP"
+                                  className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-14 pr-6 text-sm font-bold outline-none"
+                                  value={loginForm.otp}
+                                  onChange={(e) => setLoginForm({ ...loginForm, otp: e.target.value })}
+                                />
+                             </div>
+                             <button 
+                               type="button"
+                               onClick={handleRequestOtp}
+                               className="px-6 bg-white/5 border border-white/10 rounded-2xl font-black text-[9px] uppercase tracking-widest hover:bg-yellow-500 hover:text-black transition-all disabled:opacity-50"
+                               disabled={otpLoading || otpSent}
+                             >
+                                {otpLoading ? '...' : otpSent ? 'SENT' : 'SEND'}
+                             </button>
+                           </div>
+                       </div>
+                     )}
+
+                     <button 
+                      type="submit" 
+                      className="w-full bg-yellow-500 text-black py-5 rounded-2xl font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-yellow-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all mt-6 disabled:opacity-50"
+                      disabled={loginLoading}
+                     >
+                       {loginLoading ? 'Synchronizing...' : authMode === 'login' ? 'Authenticate' : 'Create Account'}
+                     </button>
+                  </form>
+
+                  <div className="mt-8 pt-8 border-t border-white/5 text-center">
+                     <button 
+                      onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setOtpSent(false); }}
+                      className="text-[10px] font-black uppercase tracking-widest text-white/20 hover:text-yellow-500 transition-colors"
+                     >
+                       {authMode === 'login' ? "Don't have an access key? Join now" : "Already a member? Secure Login"}
+                     </button>
+                  </div>
                </div>
             </div>
          )}

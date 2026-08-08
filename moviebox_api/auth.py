@@ -9,6 +9,7 @@ class MovieBoxAuth:
         self.token = token or DEFAULT_GUEST_TOKEN
         self.user_id = user_id or "7065948410213816232"
         self.is_logged_in = True
+        self.is_guest_mode = True
         self.client_info = get_default_client_info()
         self.user_info = None
         # REMOVED: self.load_session() - We no longer use a global file for multiple sessions
@@ -18,6 +19,7 @@ class MovieBoxAuth:
         self.token = DEFAULT_GUEST_TOKEN
         self.user_id = "7065948410213816232"
         self.is_logged_in = True
+        self.is_guest_mode = True
         self.user_info = None
 
     def update_session(self, token: str, user_id: str = None, user_info: dict = None):
@@ -42,10 +44,10 @@ class MovieBoxAuth:
         headers = {}
         if self.is_logged_in and self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-            headers["X-Client-Status"] = "1"
+            headers["X-Client-Status"] = "0"
         else:
             headers["X-Client-Token"] = generate_client_token()
-            headers["X-Client-Status"] = "0"
+            headers["X-Client-Status"] = "1"
         
         headers["X-Client-Info"] = json.dumps(self.client_info, separators=(',', ':'))
         return headers
