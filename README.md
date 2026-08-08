@@ -51,7 +51,7 @@ FastAPI Backend (localhost:8000)   ◄──► MovieBox/AOneRoom API Servers
 ### Step 1: Start the Backend
 
 ```powershell
-cd C:\Users\akshi\moviebox
+cd moviebox-internal-api
 python moviebox_api_server.py
 ```
 
@@ -62,7 +62,7 @@ Backend runs on **http://localhost:8000**
 ### Step 2: Start the Frontend
 
 ```powershell
-cd C:\Users\akshi\moviebox\dashboard
+cd dashboard
 npm run dev -- --port 3001
 ```
 
