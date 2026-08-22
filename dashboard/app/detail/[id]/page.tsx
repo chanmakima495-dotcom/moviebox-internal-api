@@ -58,22 +58,23 @@ export default function MovieDetail() {
     }
   }, [id]);
 
-  const fetchDetail = async () => {
+    const fetchDetail = async () => {
     try {
       const res = await movieApi.getDetail(id as string);
-      const data = res.data;
+      const data = res?.data || res;
       setMovie(data);
-      
-      if (data.subjectType === 2 || data.isCollection) {
-         const epRes = await movieApi.getEpisodes(id as string);
-         const list = epRes.data?.seasons || epRes.data || [];
-         setSeasons(list);
-         if (list.length > 0) {
-            setEpisodes(list[0].episodes || []);
-         }
+
+      if (data?.subjectType === 2 || data?.isCollection) {
+        const epRes = await movieApi.getEpisodes(id as string);
+        const list = epRes?.data?.seasons || epRes?.data || [];
+        setSeasons(list);
+        if (list.length > 0) {
+          setEpisodes(list[0]?.episodes || []);
+        }
       }
       setLoading(false);
     } catch (e) {
+      console.error(e);
       setLoading(false);
     }
   };
