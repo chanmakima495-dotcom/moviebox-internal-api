@@ -17,12 +17,12 @@ function ArtPlayer({ option, getInstance, className }: any) {
   useEffect(() => {
     if (!artRef.current || !option?.url) return;
 
-    const isHlsStream = option.url.includes('.m3u8') || option.isHls;
+    const isHls = option.url.includes('.m3u8') || option.isHls;
 
     const art = new Artplayer({
       ...option,
       container: artRef.current,
-      type: isHlsStream ? 'm3u8' : 'mp4',
+      type: isHls ? 'm3u8' : 'mp4',
       customType: {
         m3u8: function (video: HTMLVideoElement, url: string, artInstance: any) {
           if (Hls.isSupported()) {
@@ -30,9 +30,6 @@ function ArtPlayer({ option, getInstance, className }: any) {
             const hls = new Hls({
               enableWorker: true,
               lowLatencyMode: true,
-              xhrSetup: function (xhr: any) {
-                xhr.withCredentials = false;
-              }
             });
             hls.loadSource(url);
             hls.attachMedia(video);
@@ -127,6 +124,7 @@ export default function MovieDetail() {
         const stream = streamData?.data || streamData;
         if (stream?.url) {
            let playUrl = stream.url;
+           // Render Proxy Tunneling
            if (!playUrl.startsWith('http://') && !playUrl.startsWith('https://')) {
               playUrl = `https://movieboxapi-xp54.onrender.com${playUrl.startsWith('/') ? '' : '/'}${playUrl}`;
            }
@@ -178,7 +176,7 @@ export default function MovieDetail() {
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen bg-black">
-      <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+      <div className="w-12 h-12 border-4 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
     </div>
   );
 
@@ -212,8 +210,8 @@ export default function MovieDetail() {
           <div className="w-full max-w-4xl mx-auto aspect-video bg-black relative shadow-2xl border-b border-zinc-900">
              {streamLoading && (
                 <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
-                   <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Connecting Stream Mirror...</span>
+                   <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Connecting Stream...</span>
                 </div>
              )}
 
@@ -223,13 +221,16 @@ export default function MovieDetail() {
                    option={{
                      url: streamInfo.url,
                      autoplay: true,
-                     theme: '#10b981',
+                     theme: '#f59e0b',
                      volume: 0.8,
                      pip: true,
                      fullscreen: true,
                      fullscreenWeb: true,
                      isHls: streamInfo.isHls,
-                     moreVideoAttr: { crossOrigin: 'anonymous', playsInline: true },
+                     moreVideoAttr: { 
+                       crossOrigin: 'anonymous', 
+                       playsInline: true 
+                     },
                      subtitle: {
                        url: streamInfo.subtitles && streamInfo.subtitles.length > 0 
                             ? `https://movieboxapi-xp54.onrender.com/sub-proxy?u=${encodeURIComponent(streamInfo.subtitles[0].filePath || streamInfo.subtitles[0].url)}` 
@@ -248,7 +249,7 @@ export default function MovieDetail() {
                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Stream buffering or selecting mirror</span>
                    <button 
                      onClick={() => loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode)}
-                     className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-xs font-bold text-white transition-colors"
+                     className="px-4 py-2 bg-amber-400 text-black font-bold rounded-xl text-xs transition-colors"
                    >
                      Retry Mirror
                    </button>
@@ -283,7 +284,7 @@ export default function MovieDetail() {
                          <button
                            key={idx}
                            onClick={() => handleSeasonSelect(idx)}
-                           className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold ${selectedSeasonIdx === idx ? 'bg-emerald-500/10 text-emerald-400 font-bold' : 'text-zinc-300 hover:bg-white/5'}`}
+                           className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold ${selectedSeasonIdx === idx ? 'bg-amber-400/10 text-amber-400 font-bold' : 'text-zinc-300 hover:bg-white/5'}`}
                          >
                             Season {String(s.seasonNumber).padStart(2, '0')}
                          </button>
@@ -302,7 +303,7 @@ export default function MovieDetail() {
                            key={idx}
                            onClick={() => handleEpisodeClick(epNumber)}
                            className={`aspect-[4/3] rounded-xl flex items-center justify-center font-bold text-sm transition-all border ${
-                              isSelected ? 'bg-[#1b433e] text-[#2ec4b6] border-[#2ec4b6]/40 shadow-lg' : 'bg-[#22252d] text-zinc-300 border-transparent hover:bg-[#2b2f3a]'
+                              isSelected ? 'bg-amber-400/20 text-amber-400 border-amber-400/50 shadow-lg' : 'bg-[#22252d] text-zinc-300 border-transparent hover:bg-[#2b2f3a]'
                            }`}
                          >
                             {String(epNumber).padStart(2, '0')}
@@ -312,7 +313,7 @@ export default function MovieDetail() {
                 </div>
              ) : (
                 <div className="p-4 bg-[#181a20] border border-zinc-800 rounded-2xl flex items-center gap-4">
-                   <div className="px-3 py-1 bg-emerald-500/20 text-emerald-400 font-bold text-xs rounded-lg uppercase">Single Feature</div>
+                   <div className="px-3 py-1 bg-amber-400/20 text-amber-400 font-bold text-xs rounded-lg uppercase">Single Feature</div>
                    <span className="text-xs text-zinc-400">Full Length Movie active on player above.</span>
                 </div>
              )}
@@ -352,14 +353,9 @@ export default function MovieDetail() {
 
               <div className="flex-1 max-w-3xl">
                  <div className="flex flex-wrap items-center gap-3 mb-6">
-                    <span className="px-3 py-1 bg-red-600 rounded-md text-[10px] font-black uppercase tracking-[0.2em] italic">
+                    <span className="px-3 py-1 bg-amber-400 text-black rounded-md text-[10px] font-black uppercase tracking-[0.2em] italic">
                        {movie.subjectType === 2 ? 'TV Series' : 'Movie'}
                     </span>
-                    {movie.quality && (
-                      <span className="px-3 py-1 bg-white/10 rounded-md text-[10px] font-bold text-zinc-300 uppercase tracking-widest border border-white/10">
-                        {movie.quality}
-                      </span>
-                    )}
                  </div>
 
                  <h1 className="text-5xl md:text-7xl font-black italic uppercase tracking-tighter mb-6 text-white drop-shadow-2xl">
@@ -373,9 +369,9 @@ export default function MovieDetail() {
                  <div className="flex flex-wrap gap-4 mb-12">
                     <button 
                       onClick={handleWatchNow}
-                      className="flex items-center gap-3 px-10 py-5 bg-red-600 hover:bg-red-700 rounded-2xl font-black italic uppercase tracking-widest shadow-xl shadow-red-600/30 transition-all hover:scale-105 active:scale-95"
+                      className="flex items-center gap-3 px-10 py-5 bg-amber-400 text-black hover:bg-white rounded-2xl font-black italic uppercase tracking-widest shadow-xl shadow-amber-400/20 transition-all hover:scale-105 active:scale-95"
                     >
-                       <Play className="w-6 h-6 fill-white" />
+                       <Play className="w-6 h-6 fill-black text-black" />
                        Watch Now
                     </button>
                     
@@ -396,7 +392,7 @@ export default function MovieDetail() {
                        { icon: Film, label: 'Source', value: 'VIP Premium' }
                     ].map((item, i) => (
                        <div key={i} className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                          <item.icon className="w-5 h-5 text-red-500 mb-2" />
+                          <item.icon className="w-5 h-5 text-amber-400 mb-2" />
                           <div className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest">{item.label}</div>
                           <div className="text-sm font-bold truncate">{item.value}</div>
                        </div>
@@ -412,7 +408,7 @@ export default function MovieDetail() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
            <div className="w-full max-w-md bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6">
               <div className="flex items-center justify-between pb-4 border-b border-white/5">
-                 <h3 className="text-lg font-bold flex items-center gap-2"><Languages size={20} className="text-red-500" /> Select Audio / Dub</h3>
+                 <h3 className="text-lg font-bold flex items-center gap-2"><Languages size={20} className="text-amber-400" /> Select Audio / Dub</h3>
                  <button onClick={() => setShowLanguageModal(false)} className="p-2 hover:bg-white/5 rounded-full"><X size={20} /></button>
               </div>
               <div className="py-4 flex flex-col gap-2 max-h-[50vh] overflow-y-auto">
