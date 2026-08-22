@@ -30,6 +30,9 @@ function ArtPlayer({ option, getInstance, className }: any) {
             const hls = new Hls({
               enableWorker: true,
               lowLatencyMode: true,
+              xhrSetup: function (xhr: any) {
+                xhr.withCredentials = false;
+              }
             });
             hls.loadSource(url);
             hls.attachMedia(video);
@@ -124,7 +127,6 @@ export default function MovieDetail() {
         const stream = streamData?.data || streamData;
         if (stream?.url) {
            let playUrl = stream.url;
-           // Render Proxy Tunneling
            if (!playUrl.startsWith('http://') && !playUrl.startsWith('https://')) {
               playUrl = `https://movieboxapi-xp54.onrender.com${playUrl.startsWith('/') ? '' : '/'}${playUrl}`;
            }
