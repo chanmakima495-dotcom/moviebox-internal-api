@@ -2,13 +2,11 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { movieApi, MovieItem } from '../../../lib/api';
+import { movieApi } from '../../../lib/api';
 import { 
-  Play, Plus, Star, ChevronLeft, Info, 
-  Clock, Calendar, Languages, Film, X, Zap, 
-  User, Tv, ChevronRight, Pause, RotateCcw, 
-  RotateCw, Settings, Subtitles, Download,
-  Volume2, Maximize, Loader2
+  Play, Plus, Star, ChevronLeft, 
+  Clock, Calendar, Languages, Film, X, 
+  User, Tv
 } from 'lucide-react';
 import { CollectionGrid } from '../../../components/CollectionGrid';
 import Artplayer from 'artplayer';
@@ -48,7 +46,7 @@ export default function MovieDetail() {
   const [episodes, setEpisodes] = useState<any[]>([]);
   const [streamInfo, setStreamInfo] = useState<any>(null);
   const [showLanguageModal, setShowLanguageModal] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<any>(null); // {id, subjectId, name, type}
+  const [selectedLanguage, setSelectedLanguage] = useState<any>(null);
   
   const artInstance = useRef<any>(null);
 
@@ -58,7 +56,7 @@ export default function MovieDetail() {
     }
   }, [id]);
 
-    const fetchDetail = async () => {
+  const fetchDetail = async () => {
     try {
       const res = await movieApi.getDetail(id as string);
       const data = res?.data || res;
@@ -81,7 +79,7 @@ export default function MovieDetail() {
 
   const selectSeason = (idx: number) => {
      setSelectedSeasonIdx(idx);
-     setEpisodes(seasons[idx].episodes || []);
+     setEpisodes(seasons[idx]?.episodes || []);
      setStreamInfo(null);
   };
 
@@ -90,30 +88,26 @@ export default function MovieDetail() {
         const targetId = selectedLanguage?.subjectId || id;
         const resourceId = selectedLanguage?.id;
         
-        console.log("Resolving Stream for native launch:", targetId, "S", seasonNum, "E", epNum, "Resource:", resourceId);
+        console.log("Resolving Stream for Web Player:", targetId, "S", seasonNum, "E", epNum);
         
-        // 1. Pre-resolve the video URL via our high-fidelity resolver API
-        const streamData = await movieApi.getStream(targetId as string, seasonNum || 1, epNum as any || 1, qual, resourceId || undefined);
+        const streamData = await movieApi.getStream(
+           targetId as string, 
+           seasonNum || 1, 
+           epNum as any || 1, 
+           qual, 
+           resourceId || undefined
+        );
         
-        if (!streamData?.url) {
+        const stream = streamData?.data || streamData;
+        if (!stream?.url) {
            console.error("Could not resolve video URL.");
            return;
         }
 
-        console.log("Launching MPV with resolved URL:", streamData.url.substring(0, 50) + "...");
-        
-        // 2. Pass the RAW VIDEO URL to the backend launcher
-        await movieApi.launchPlayer('mpv', streamData.url, {
-           subject_id: selectedLanguage?.subjectId || id,
-           resource_id: selectedLanguage?.id,
-           season: seasonNum || 1,
-           episode: epNum || 1,
-           title: movie?.title,
-           cookie: streamData.cookie,
-           duration: streamData.duration
-        });
+        // ব্রাউজারে ইন-বিল্ট ওয়েব প্লেয়ারে ভিডিও লোড হবে
+        setStreamInfo(stream);
      } catch (e) {
-        console.error("MPV Launch error:", e);
+        console.error("Stream error:", e);
      }
   };
 
@@ -197,7 +191,13 @@ export default function MovieDetail() {
              {!movie.isCollection && (
                 <div className="flex flex-wrap gap-4 mb-12">
                    <button 
-                     onClick={() => { if (episodes.length > 0) getStream(seasons[selectedSeasonIdx].seasonNumber, episodes[0].episodeNumber); else if (movie.subjectType !== 2) getStream(0, 0); }}
+                     onClick={() => { 
+                       if (episodes && episodes.length > 0) {
+                         getStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, episodes[0]?.episodeNumber || 1);
+                       } else {
+                         getStream(1, 1);
+                       }
+                     }}
                      className="flex items-center gap-3 px-10 py-5 bg-red-600 hover:bg-red-700 rounded-2xl font-black italic uppercase tracking-widest shadow-xl shadow-red-600/30 transition-all hover:scale-105 active:scale-95 group"
                    >
                       <Play className="w-6 h-6 fill-white group-hover:scale-110 transition-transform" />
@@ -295,7 +295,7 @@ export default function MovieDetail() {
                  {episodes.map((ep, i) => (
                     <button 
                       key={i}
-                      onClick={() => getStream(seasons[selectedSeasonIdx].seasonNumber, ep.episodeNumber)}
+                      onClick={() => getStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, ep?.episodeNumber || 1)}
                       className="group flex flex-col p-4 bg-white/5 hover:bg-white/10 rounded-2xl border border-white/5 transition-all text-left"
                     >
                        <div className="flex items-center justify-between mb-2">
@@ -333,19 +333,6 @@ export default function MovieDetail() {
               getInstance={(art: any) => {
                 artInstance.current = art;
                 
-                // HARD SEEKING: Re-request the stream bridge with new start_time
-                art.on('video:seeking', () => {
-                   const currentTime = art.video.currentTime;
-                   const isProxy = streamInfo.url.includes('/stream-bridge/') || streamInfo.url.includes('/play-compat/');
-                   if (isProxy) {
-                      const baseUrl = streamInfo.url.split('?')[0];
-                      const params = streamInfo.url.split('?')[1].split('&').filter((p:string) => !p.startsWith('start_time')).join('&');
-                      const newUrl = `${baseUrl}?${params}&start_time=${currentTime}`;
-                      art.switchUrl(newUrl);
-                   }
-                });
-
-                // DURATION PROTECTION: Force actual duration from metadata
                 art.on('video:durationchange', () => {
                    if (streamInfo.duration && Math.abs(art.video.duration - streamInfo.duration) > 5) {
                       Object.defineProperty(art.video, 'duration', {
@@ -358,9 +345,8 @@ export default function MovieDetail() {
               option={{
                 url: streamInfo.url,
                 autoplay: true,
-                muted: true,
                 autoSize: true,
-                type: streamInfo.url && (streamInfo.url.includes('.mpd') || streamInfo.url.includes('.manifest')) ? 'mpd' : (streamInfo.isHls ? 'm3u8' : 'mp4'),
+                type: streamInfo.url && (streamInfo.url.includes('.mpd') || streamInfo.url.includes('.manifest')) ? 'mpd' : (streamInfo.url?.includes('.m3u8') ? 'm3u8' : 'mp4'),
                 duration: streamInfo.duration || 3600,
                 title: movie.title,
                 poster: movie.poster || movie.cover,
@@ -375,7 +361,7 @@ export default function MovieDetail() {
                 aspectRatio: true,
                 subtitle: {
                    url: streamInfo.subtitles && streamInfo.subtitles.length > 0 
-                        ? `http://localhost:8000/sub-proxy?u=${encodeURIComponent(streamInfo.subtitles[0].filePath)}` 
+                        ? `/api/sub-proxy?u=${encodeURIComponent(streamInfo.subtitles[0].filePath || streamInfo.subtitles[0].url)}` 
                         : '',
                    type: 'vtt',
                    style: { color: '#fff', fontSize: '24px' },
@@ -385,11 +371,6 @@ export default function MovieDetail() {
                 fullscreenWeb: true,
                 subtitleOffset: true,
                 miniProgressBar: true,
-                mutex: true,
-                backdrop: true,
-                playsInline: true,
-                autoPlayback: true,
-                airplay: true,
                 theme: '#dc2626',
                 moreVideoAttr: {
                    crossOrigin: 'anonymous',
@@ -398,52 +379,12 @@ export default function MovieDetail() {
                   m3u8: function (video: HTMLVideoElement, url: string, art: any) {
                     if (Hls.isSupported()) {
                       if (art.hls) art.hls.destroy();
-                      const hls = new Hls({
-                         xhrSetup: function(xhr: any) {
-                            xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
-                            if (streamInfo.cookie) {
-                               xhr.setRequestHeader('Cookie', streamInfo.cookie);
-                            }
-                         }
-                      });
+                      const hls = new Hls();
                       hls.loadSource(url);
                       hls.attachMedia(video);
                       art.hls = hls;
                       art.on('destroy', () => hls.destroy());
                     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                      video.src = url;
-                    }
-                  },
-                  mpd: function (video: HTMLVideoElement, url: string, art: any) {
-                    const dashjs = (window as any).dashjs;
-                    if (dashjs) {
-                      if (art.dash) {
-                        try { art.dash.destroy(); } catch(e) {}
-                      }
-                      const player = dashjs.MediaPlayer().create();
-                      
-                      // Set request modifier to append headers (User-Agent and Cookie)
-                      player.extend("RequestModifier", function () {
-                          return {
-                              modifyRequestHeader: function (xhr: any) {
-                                  xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
-                                  if (streamInfo.cookie) {
-                                      xhr.setRequestHeader('Cookie', streamInfo.cookie);
-                                  }
-                                  return xhr;
-                              },
-                              modifyRequestURL: function (url: string) {
-                                  return url;
-                              }
-                          };
-                      }, true);
-                      
-                      player.initialize(video, url, true);
-                      art.dash = player;
-                      art.on('destroy', () => {
-                        try { player.destroy(); } catch(e) {}
-                      });
-                    } else {
                       video.src = url;
                     }
                   }
@@ -453,6 +394,7 @@ export default function MovieDetail() {
             />
          </div>
       )}
+
       {/* Language Selector Modal */}
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
@@ -473,9 +415,8 @@ export default function MovieDetail() {
                    onClick={() => { 
                       setSelectedLanguage(null); 
                       setShowLanguageModal(false);
-                      // Instant play with default audio
-                      if (episodes.length > 0) getStream(seasons[selectedSeasonIdx].seasonNumber, episodes[0].episodeNumber);
-                      else getStream(0, 0);
+                      if (episodes.length > 0) getStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, episodes[0]?.episodeNumber || 1);
+                      else getStream(1, 1);
                    }}
                    className={`flex items-center justify-between px-6 py-5 rounded-2xl text-left transition-all ${
                     !selectedLanguage ? 'bg-red-600/10 border border-red-600/30 text-red-500 font-bold' : 'bg-white/5 hover:bg-white/10'
@@ -491,10 +432,8 @@ export default function MovieDetail() {
                       onClick={() => { 
                          setSelectedLanguage(lang); 
                          setShowLanguageModal(false);
-                         // Instant play with selected dub
-                         // Note: We use the context of current episodes, but the target ID is changed in getStream
-                         if (episodes.length > 0) getStream(seasons[selectedSeasonIdx].seasonNumber, episodes[0].episodeNumber);
-                         else getStream(0, 0);
+                         if (episodes.length > 0) getStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, episodes[0]?.episodeNumber || 1);
+                         else getStream(1, 1);
                       }}
                       className={`flex items-center justify-between px-6 py-5 rounded-2xl text-left transition-all ${
                         selectedLanguage?.subjectId === lang.subjectId && selectedLanguage?.id === lang.id ? 'bg-red-600/10 border border-red-600/30 text-red-500 font-bold' : 'bg-white/5 hover:bg-white/10'
