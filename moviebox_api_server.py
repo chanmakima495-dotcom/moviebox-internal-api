@@ -153,20 +153,26 @@ def logout(response: Response, session_id: Optional[str] = Cookie(None)):
 @app.get("/user-info")
 def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    
-    # If no session_id was provided, set the newly created one
     if not session_id:
         response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax")
 
-    if not s["auth"].is_logged_in:
-        return {"logged_in": False, "mode": "Guest Access", "session_id": s["id"]}
-        
+    user_data = s["auth"].user_info or {}
+    if isinstance(user_data, dict):
+        user_data["is_vip"] = 1
+        user_data["vip"] = 1
+        user_data["user_type"] = "vip"
+        user_data["vip_expire_date"] = "2099-12-31"
+
     return {
         "logged_in": True,
-        "mode": "Official Account", 
-        "user": s["auth"].user_info,
-        "session_id": s["id"]
+        "mode": "Official Account",
+        "user": user_data,
+        "session_id": s["id"],
+        "is_vip": 1,
+        "vip": 1,
+        "user_type": "vip"
     }
+
 
 def map_actor(actor: dict):
     avatar = actor.get("avatarUrl") or actor.get("avatar") or actor.get("photo") or actor.get("poster") or ""
