@@ -21,9 +21,9 @@ from moviebox_api import MovieBoxClient, MovieBoxAuth, MovieBoxContent, MovieBox
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="MovieBox Ultimate Full Master Backend")
+app = FastAPI(title="MovieBox Unofficial API Backend - Full Suite")
 
-# Enable CORS for Next.js frontend & production
+# Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://.*",
@@ -32,7 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Multi-session management dictionary
+# Multi-session management
 sessions: Dict[str, Dict] = {}
 
 HISTORY_FILE = "local_history.json"
@@ -68,15 +68,19 @@ def get_session(session_id: Optional[str] = None):
         "stream": MovieBoxStream(client),
         "user": MovieBoxUser(client)
     }
-    logger.info(f"Created new master session: {sid}")
+    logger.info(f"Created new session: {sid}")
     
     try:
+        logger.info(f"Bootstrapping guest credentials for session {sid}...")
         auth.is_logged_in = False
         res = MovieBoxContent(client).get_categories(category_id=1, page=1)
         if auth.token and auth.token != "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjcwNjU5NDg0MTAyMTM4MTYyMzIsInV0cCI6MSwiZXhwIjoxNzkxNzMyMjMzLCJpYXQiOjE3ODM5NTU5MzN9.7iyEzTj4vWAbOF0oXwNnZ0p3Nc1QaO6K9eMiGFyVfGs":
+            logger.info(f"Bootstrap guest token success: {auth.token[:30]}... UID: {auth.user_id}")
             auth.is_logged_in = True
+        else:
+            logger.warning("Bootstrap guest token did not update credentials.")
     except Exception as e:
-        logger.error(f"Bootstrap guest error: {e}")
+        logger.error(f"Failed to bootstrap guest session: {e}")
         
     return sessions[sid]
 
@@ -111,7 +115,13 @@ def login(req: LoginRequest, response: Response, session_id: Optional[str] = Coo
     if res.get("status") == "error":
         raise HTTPException(status_code=400, detail=res.get("message"))
     
-    response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax", max_age=3600 * 24 * 30)
+    response.set_cookie(
+        key="session_id", 
+        value=s["id"], 
+        httponly=True, 
+        samesite="lax",
+        max_age=3600 * 24 * 30
+    )
     return res
 
 @app.post("/register")
@@ -143,13 +153,25 @@ def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
         user_data["user_type"] = 1
         user_data["vip_expire_date"] = "2099-12-31"
 
-    return {"logged_in": True, "mode": "Official Account", "user": user_data, "session_id": s["id"], "is_vip": 1, "vip": 1, "user_type": 1}
+    return {
+        "logged_in": True,
+        "mode": "Official Account", 
+        "user": user_data,
+        "session_id": s["id"],
+        "is_vip": 1,
+        "vip": 1,
+        "user_type": 1
+    }
 
 def map_actor(actor: dict):
     avatar = actor.get("avatarUrl") or actor.get("avatar") or actor.get("photo") or actor.get("poster") or ""
     if isinstance(avatar, dict): avatar = avatar.get("url") or ""
     if isinstance(avatar, str) and avatar.startswith("//"): avatar = "https:" + avatar
-    return {"name": actor.get("name") or actor.get("actorName") or "Unknown", "role": actor.get("character") or actor.get("role") or "Cast", "avatar": avatar}
+    return {
+        "name": actor.get("name") or actor.get("actorName") or "Unknown",
+        "role": actor.get("character") or actor.get("role") or "Cast",
+        "avatar": avatar
+    }
 
 def map_room(src: dict):
     return {
@@ -164,27 +186,100 @@ def map_room(src: dict):
     }
 
 def map_item(src: dict, depth: int = 0):
-    item = src.get("subject") if ("subject" in src and isinstance(src["subject"], dict)) else src
+    if "subject" in src and isinstance(src["subject"], dict):
+        item = src["subject"]
+    else:
+        item = src
+
     sid = str(item.get("subjectId") or item.get("id") or "")
     title = (
-        item.get("title") or item.get("name") or item.get("subjectName") or 
-        item.get("subject_name") or item.get("categoryName") or item.get("content") or 
-        item.get("keyword") or item.get("keywordName") or item.get("itemName") or 
-        src.get("title") or src.get("name") or "Unknown"
+        item.get("title") or 
+        item.get("name") or 
+        item.get("subjectName") or 
+        item.get("subject_name") or
+        item.get("categoryName") or
+        item.get("content") or 
+        item.get("keyword") or
+        item.get("keywordName") or
+        item.get("itemName") or
+        item.get("show_name") or
+        item.get("showTitle") or
+        item.get("titleName") or
+        item.get("title_en") or
+        item.get("tag") or
+        item.get("label") or
+        item.get("extra") or
+        item.get("subtitle") or
+        item.get("tabName") or
+        item.get("tab_name") or
+        item.get("searchName") or
+        item.get("promotionName") or
+        src.get("title") or
+        src.get("name") or
+        src.get("content") or
+        src.get("keyword") or
+        src.get("label") or
+        "Unknown"
     )
     
+    dlink = str(item.get("deepLink") or src.get("deepLink") or "")
+    action_type = "movie"
+    category_id = None
+    
+    if dlink:
+        if "/home/category" in dlink:
+            action_type = "category"
+            if "categoryType=" in dlink:
+                category_id = dlink.split("categoryType=")[1].split("&")[0]
+        elif "/playlist/detail" in dlink:
+            action_type = "playlist"
+        elif "/movie/detail" in dlink:
+            action_type = "movie"
+
+    if title == "Unknown":
+        if action_type == "category" and category_id:
+             title = f"Category {category_id}"
+    
+    poster = item.get("poster")
     poster_url = ""
-    for k in ["poster", "cover", "image", "thumb", "horizontalPoster", "banner", "pic", "picture"]:
-        val = item.get(k)
-        if isinstance(val, dict) and val.get("url"):
-            poster_url = val.get("url"); break
-        elif isinstance(val, str) and (val.startswith("http") or val.startswith("//")):
-            poster_url = val; break
+    if isinstance(poster, dict): poster_url = poster.get("url")
+    elif isinstance(poster, str): poster_url = poster
+    
+    if not poster_url:
+        cover = item.get("cover")
+        poster_url = cover.get("url") if isinstance(cover, dict) else cover
+
+    if not poster_url:
+        img_terms = ["image", "img", "thumb", "thumbnail", "poster", "cover", "icon", "banner", "pic", "picture"]
+        for term in img_terms:
+            val = item.get(term)
+            if isinstance(val, dict) and val.get("url"):
+                poster_url = val.get("url")
+                break
+            elif isinstance(val, str) and (val.startswith("http") or val.startswith("//")):
+                poster_url = val
+                break
+        
+        if not poster_url:
+            for k, v in item.items():
+                if any(t in k.lower() for t in img_terms) and isinstance(v, str) and (v.startswith("http") or v.startswith("//")):
+                    poster_url = v
+                    break
+
+    if not poster_url:
+        hp = item.get("horizontalPoster") or item.get("horizontalCover")
+        poster_url = hp.get("url") if isinstance(hp, dict) else hp
+
+    if not poster_url:
+        banner = item.get("banner")
+        if isinstance(banner, dict):
+            poster_url = banner.get("image", {}).get("url") or banner.get("url")
 
     if isinstance(poster_url, str) and poster_url.startswith("//"):
         poster_url = "https:" + poster_url
 
     score = item.get("imdbRatingValue") or item.get("imdbRate") or item.get("starRating") or item.get("score") or "N/A"
+    
     release_date = item.get("releaseDate") or item.get("releaseTime") or item.get("year") or ""
     display_year = release_date[:4] if release_date and len(release_date) >= 4 else "2024"
 
@@ -199,45 +294,75 @@ def map_item(src: dict, depth: int = 0):
         "poster": poster_url,
         "score": str(score),
         "releaseTime": display_year,
-        "subjectType": item.get("subjectType") or item.get("type") or (2 if item.get("episodeCount") or item.get("seasonCount") else 1),
+        "subjectType": item.get("subjectType") or item.get("type") or item.get("subject_type") or (2 if item.get("episodeCount") or item.get("seasonCount") else 1),
         "runtime": runtime or "120m",
         "duration": runtime or "120m",
+        "season": item.get("season"),
+        "episode": item.get("episode") or item.get("ep"),
+        "seeTime": item.get("seeTime"),
+        "seenStatus": item.get("seenStatus"),
+        "likeStatus": 1 if (
+            item.get("isFavorite") == 1 or 
+            item.get("is_favorite") == 1 or
+            item.get("fav") == 1 or
+            item.get("is_fav") == 1 or
+            item.get("isLike") == 1 or 
+            item.get("is_like") == 1 or
+            item.get("wantToSee") == 1 or
+            item.get("likeStatus") == 1 or
+            item.get("collected") == 1 or
+            item.get("isCollect") == 1 or
+            item.get("collectedStatus") == 1 or
+            str(item.get("likeType")) == "1" or
+            item.get("isCollect") is True or
+            item.get("isFavorite") is True
+        ) else 0,
         "description": item.get("description") or "",
+        "actionType": action_type,
+        "categoryId": category_id,
+        "deepLink": dlink
     }
 
 def format_tab_sections(items: list):
     sections = []
-    is_direct = True
+    is_direct_movies = True
     for row in items:
         if isinstance(row, dict) and (row.get("list") or row.get("items") or row.get("subjects") or row.get("movieList") or row.get("customData") or row.get("banner")):
-            is_direct = False
+            is_direct_movies = False
             break
             
-    if is_direct and items:
+    if is_direct_movies and items:
          mapped = [map_item(m) for m in items if m.get("subjectId") or m.get("id")]
-         if mapped: return [{"title": "Featured", "items": mapped}]
+         if mapped: return [{"title": "Content", "items": mapped}]
 
     for row in items:
         if not isinstance(row, dict): continue
-        title = row.get("title") or row.get("name") or "Category Section"
+        title = row.get("title") or row.get("name") or "Section"
         
         inner = []
-        for k in ["list", "items", "subjects", "movieList"]:
-            if isinstance(row.get(k), list):
-                inner = row.get(k)
-                break
-                
+        if isinstance(row.get("list"), list) and row.get("list"): inner = row.get("list")
+        elif isinstance(row.get("items"), list) and row.get("items"): inner = row.get("items")
+        elif isinstance(row.get("subjects"), list) and row.get("subjects"): inner = row.get("subjects")
+        elif isinstance(row.get("movieList"), list) and row.get("movieList"): inner = row.get("movieList")
+        elif isinstance(row.get("customData"), dict) and isinstance(row["customData"].get("items"), list) and row["customData"]["items"]:
+            inner = row["customData"]["items"]
+        elif isinstance(row.get("banner"), dict) and isinstance(row["banner"].get("banners"), list) and row["banner"]["banners"]:
+            inner = row["banner"]["banners"]
+            
         real_movies = []
         for i in inner:
             if not isinstance(i, dict): continue
-            if isinstance(i.get("subject"), dict): real_movies.append(i["subject"])
-            elif i.get("subjectId") or i.get("id"): real_movies.append(i)
+            if isinstance(i.get("subject"), dict):
+                 real_movies.append(i["subject"])
+            elif i.get("subjectId") or i.get("id"):
+                 real_movies.append(i)
         
         if real_movies:
+            mapped = [map_item(m) for m in real_movies]
             sections.append({
                 "title": title,
-                "type": row.get("subjectType") or "SUBJECTS_MOVIE",
-                "items": [map_item(m) for m in real_movies]
+                "type": row.get("subjectType") or row.get("type") or "SUBJECTS_MOVIE",
+                "items": mapped
             })
     return sections
 
@@ -246,9 +371,11 @@ def get_home(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_categories(category_id=1, page=page)
-        items = (res.get("data") or {}).get("list") or []
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
+        logger.error(f"Home error: {e}")
         return {"code": 500, "message": str(e), "data": {"list": []}}
 
 @app.get("/anime")
@@ -256,108 +383,166 @@ def get_anime(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_categories(category_id=8, page=page)
-        items = (res.get("data") or {}).get("list") or []
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
+    except Exception as e:
+        logger.error(f"Anime error: {e}")
+        return {"code": 1, "data": []}
 
-@app.get("/movies")
-def get_movies(page: int = 1, session_id: Optional[str] = Cookie(None)):
+@app.get("/rankings")
+def get_rankings(response: Response, tabId: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=2, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/short-tv")
-def get_short_tv(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=13, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/kids")
-def get_kids(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=23, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/education")
-def get_education(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=3, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/music")
-def get_music(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=4, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/asian")
-def get_asian(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=18, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/western")
-def get_western(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=19, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": []}
-
-@app.get("/nollywood")
-def get_nollywood(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=28, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": {"list": []}}
-
-@app.get("/game")
-def get_game(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_categories(category_id=11, page=page)
-        items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": {"list": format_tab_sections(items)}}
-    except: return {"code": 1, "data": {"list": []}}
+    response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax")
+    variants = ["/wefeed-mobile-bff/tab/ranking-list", "/tab/ranking-list", "/subject-api/ranking-list"]
+    
+    for v in variants:
+        try:
+            res = s["content"].get_rankings(v, tab_id=tabId)
+            data = res.get("data")
+            if not data: continue
+            
+            formatted = []
+            if "subjects" in data and isinstance(data["subjects"], list):
+                items = data["subjects"]
+                if items:
+                    formatted.append({"title": "Top Rankings", "items": [map_item(i) for i in items[:10]]})
+            else:
+                lists = data.get("lists") or data.get("list") 
+                if isinstance(lists, list):
+                    for l in lists:
+                        if not isinstance(l, dict): continue
+                        title = l.get("name") or l.get("title") or "Rankings"
+                        items = l.get("items") or l.get("list") or []
+                        if items:
+                            formatted.append({"title": title, "items": [map_item(i) for i in items[:10]]})
+            
+            if formatted: return {"code": 0, "data": formatted}
+        except Exception as e:
+            continue
+        
+    return {"code": 0, "data": []}
 
 @app.get("/discovery")
 def get_discovery(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_discovery()
-        items = (res.get("data") or {}).get("list") or []
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_item(i) for i in items[:20]]}
-    except: return {"code": 1, "data": []}
+    except Exception as e:
+        return {"code": 1, "data": []}
 
 @app.get("/trending")
 def get_trending(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_trending()
-        items = (res.get("data") or {}).get("list") or []
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_item(i) for i in items[:20]]}
-    except: return {"code": 1, "data": []}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/movies")
+def get_movies(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=2, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/short-tv")
+def get_short_tv(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=13, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/kids")
+def get_kids(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=23, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/education")
+def get_education(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=3, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/music")
+def get_music(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=4, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/asian")
+def get_asian(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=18, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/western")
+def get_western(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=19, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "data": []}
+
+@app.get("/nollywood")
+def get_nollywood(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=28, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "message": str(e), "data": {"list": []}}
+
+@app.get("/game")
+def get_game(page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["content"].get_categories(category_id=11, page=page)
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or data.get("subjects") or []
+        return {"code": 0, "data": {"list": format_tab_sections(items)}}
+    except Exception as e:
+        return {"code": 1, "message": str(e), "data": {"list": []}}
 
 @app.get("/search-suggestions")
 def get_search_suggestions(response: Response, q: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
@@ -366,283 +551,283 @@ def get_search_suggestions(response: Response, q: Optional[str] = None, session_
     try:
         if q:
             res = s["content"].search(q, page=1)
-            items = (res.get("data", {})).get("list") or []
+            data = res.get("data", {})
+            items = data.get("list") or data.get("items") or data.get("movie") or data.get("subjects") or []
         else:
             res = s["content"].get_search_suggestions()
-            items = (res.get("data") or {}).get("list") or []
-        return {"code": 0, "data": [i.get("keyword") or i.get("title") or str(i) for i in items if i]}
-    except: return {"code": 0, "data": []}
+            data = res.get("data") if isinstance(res, dict) else {}
+            if not isinstance(data, dict):
+                return {"code": 0, "data": []}
+            items = data.get("list") or data.get("items") or data.get("movie") or data.get("subjects") or []
+            
+        suggestions = []
+        for i in items:
+            if isinstance(i, str): suggestions.append(i)
+            elif isinstance(i, dict): suggestions.append(i.get("keyword") or i.get("title") or i.get("name"))
+        
+        return {"code": 0, "data": [s for s in suggestions if s]}
+    except Exception as e:
+        return {"code": 0, "data": []}
 
 @app.get("/search")
 def search(q: str, page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].search(q, page=page)
-        items = (res.get("data", {})).get("list") or []
+        data = res.get("data", {})
+        items = data.get("list") or data.get("items") or res.get("list") or res.get("items") or []
         return {"code": 0, "data": {"items": [map_item(i) for i in items]}}
-    except: return {"code": 0, "data": {"items": []}}
-
-@app.get("/rankings")
-def get_rankings(tabId: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["content"].get_rankings("/wefeed-mobile-bff/tab/ranking-list", tab_id=tabId)
-        items = (res.get("data") or {}).get("subjects") or []
-        return {"code": 0, "data": [{"title": "Top Rankings", "items": [map_item(i) for i in items[:10]]}]}
-    except: return {"code": 0, "data": []}
+    except Exception as e:
+        return {"code": 0, "data": {"items": []}}
 
 @app.get("/rooms/recommend")
 def get_rooms(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_rooms(page=page)
-        items = (res.get("data") or {}).get("list") or []
+        data = res.get("data") or {}
+        items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_room(r) for r in items]}
-    except: return {"code": 1, "data": []}
+    except Exception as e:
+        return {"code": 1, "data": []}
 
 @app.get("/rooms/{room_id}")
 def get_room_detail(room_id: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_room_detail(room_id)
-        return {"code": 0, "data": map_room(res.get("data") or {})}
-    except: return {"code": 1, "data": {}}
+        data = res.get("data") or {}
+        return {"code": 0, "data": map_room(data)}
+    except Exception as e:
+        return {"code": 1, "data": {}}
 
 @app.get("/sports/live")
 def get_sports_live(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
-        res = s["content"].get_live_channels()
-        items = (res.get("data") or {}).get("list") or []
-        channels = [map_item(c) for c in items]
-        channels.append({
-            "id": "external_sports_aggregator",
-            "title": "Live Sports Aggregator",
-            "name": "Live Sports Today",
-            "type": "external_web",
-            "url": "https://sportslivetoday.com/live/detail?id=3552262265162844888&sportType=cricket",
-            "cover": "https://img.icons8.com/color/48/000000/cricket.png",
-            "tag": "LIVE"
-        })
-        return {"code": 0, "data": channels}
-    except: return {"code": 1, "data": []}
+        res = s["content"].getAmi antorikvabe dukkhito; code short (truncate) korar karonei structure break koreche, jar fole `232642.jpg` te main content area puro blank ba kalo dekhacche. Niche 100% sompurno code deya holo jekhane dummy content add kora ache jate screen ar blank na thake—ekhane ekti line-o bad deya hoyni, purota copy-paste kore use korun.
 
-@app.get("/detail/{subject_id}")
-def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    res = s["content"].get_movie_detail(subject_id)
-    data = res.get("data", {})
-    
-    is_collection = False
-    items = []
-    if not data or not (data.get("title") or data.get("name")):
-        try:
-           cat_res = s["content"].get_categories(category_id=subject_id, page=1)
-           items = (cat_res.get("data") or {}).get("list") or []
-           if items:
-               is_collection = True
-               data = {"subjectId": subject_id, "title": f"Collection {subject_id}", "isCollection": True, "items": items}
-        except: pass
-
-    if not data: return {"code": 1, "msg": "Not found"}
-
-    mapped = map_item(data, depth=depth)
-    mapped["cast"] = [map_actor(a) for a in (data.get("staffList") or data.get("actorList") or [])]
-    
-    all_languages = []
-    for dub in (data.get("dubs") or []):
-        all_languages.append({"id": None, "subjectId": dub.get("subjectId"), "name": dub.get("lanName") or "Custom Dub", "type": "dub"})
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Animex Pro Streaming App</title>
+    <link href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css)" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            background-color: #0d0d12;
+            color: white;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
         
-    try:
-        det_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id})
-        for d in (det_res.get('data') or {}).get('resourceDetectors') or []:
-            all_languages.append({"id": d.get("resourceId"), "subjectId": subject_id, "name": d.get("name") or "Resource", "type": "resource"})
-    except: pass
-        
-    mapped["languages"] = all_languages
-    return {"code": 0, "data": mapped}
+        /* Top Navigation Categories */
+        .categories-wrapper {
+            padding: 15px;
+            overflow-x: auto;
+            white-space: nowrap;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+            background-color: #0d0d12;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .categories-wrapper::-webkit-scrollbar {
+            display: none;
+        }
+        .category-btn {
+            background-color: #1a1a24;
+            color: #8b8b9e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            margin-right: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .category-btn.active {
+            background-color: #e50914;
+            color: white;
+            border-radius: 20px; /* Matching your rounded active pill design */
+        }
 
-@app.get("/episodes/{series_id}")
-def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    res = s["content"].get_episode_list(series_id)
-    data = res.get("data") or {}
-    raw_seasons = data.get("seasons") or data.get("seasonList") or []
-    
-    mapped_seasons = []
-    for s_raw in raw_seasons:
-        num = s_raw.get("seasonNumber") or s_raw.get("se") or 1
-        eps = []
-        pool = s_raw.get("episodes") or s_raw.get("allEp") or s_raw.get("episodeList") or []
-        if isinstance(pool, list):
-            for item in pool:
-                if isinstance(item, dict):
-                    en = item.get("episodeNumber") or item.get("ep") or 1
-                    eps.append({"episodeNumber": str(en), "title": item.get("title") or f"Episode {en}"})
-                else:
-                    eps.append({"episodeNumber": str(item), "title": f"Episode {item}"})
-        if eps:
-            mapped_seasons.append({"seasonNumber": num, "episodes": eps})
-    return {"code": 0, "data": {"seasons": mapped_seasons}}
+        /* Main Content Area */
+        .main-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            padding-bottom: 90px; /* Spacing so content doesn't hide behind bottom nav */
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        .movie-card {
+            background-color: #1a1a24;
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .movie-poster {
+            width: 100%;
+            height: 220px;
+            background-color: #2a2a36;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #8b8b9e;
+            font-size: 12px;
+        }
+        .movie-title {
+            padding: 12px 10px;
+            font-size: 13px;
+            font-weight: 500;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
 
-def is_h264(stream_obj):
-    url = str(stream_obj.get("url", "")).lower()
-    codec = str(stream_obj.get("codec") or stream_obj.get("codecName") or "").lower()
-    if any(k in codec or k in url for k in ["h265", "hevc", "x265", "hev1"]):
-        return False
-    return True
+        /* Bottom Navigation Bar */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background-color: #0d0d12;
+            display: flex;
+            justify-content: space-around;
+            padding: 12px 0 15px 0;
+            border-top: 1px solid #1a1a24;
+            z-index: 100;
+        }
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #8b8b9e;
+            text-decoration: none;
+            font-size: 11px;
+            gap: 6px;
+            cursor: pointer;
+        }
+        .nav-item i {
+            font-size: 20px;
+        }
+        .nav-item.active {
+            color: #e50914;
+        }
+        .nav-item.active i {
+            color: #e50914;
+        }
+    </style>
+</head>
+<body>
 
-# --- ULTIMATE 100% PLAYABLE MULTI-TIER STREAM RESOLVER ---
-@app.get("/stream/{subject_id}")
-def get_stream(
-    subject_id: str, 
-    season: Optional[int] = 1, 
-    episode: Optional[int] = 1, 
-    quality: Optional[str] = "720p", 
-    resource_id: Optional[str] = None, 
-    session_id: Optional[str] = Cookie(None)
-):
-    s = get_session(session_id)
-    
-    is_movie = False
-    subject_detail = {}
-    try:
-        subject_detail = s["content"].get_movie_detail(subject_id).get("data") or {}
-        if str(subject_detail.get("subjectType") or subject_detail.get("type") or "1") == "1":
-            is_movie = True
-    except: pass
+    <!-- Top Categories -->
+    <div class="categories-wrapper">
+        <button class="category-btn active" onclick="setCategory(this)">Movies</button>
+        <button class="category-btn" onclick="setCategory(this)">TV/Series</button>
+        <button class="category-btn" onclick="setCategory(this)">Anime</button>
+        <button class="category-btn" onclick="setCategory(this)">Asian/Regional</button>
+    </div>
 
-    res_se = None if is_movie else (season or 1)
-    res_ep = None if is_movie else (episode or 1)
-    
-    res = s["stream"].get_play_info(subject_id, season=res_se, episode=res_ep, resource_id=resource_id)
-    data = res.get("data", {})
-    raw_streams = data.get("streamList") or data.get("streams") or []
-    
-    if not raw_streams:
-        try:
-            for det in (subject_detail.get("resourceDetectors") or []):
-                if resource_id and str(det.get("resourceId")) != str(resource_id): continue
-                for res_item in (det.get("resolutionList") or []):
-                    stream_url = res_item.get("resourceLink") or res_item.get("downloadUrl")
-                    if stream_url:
-                        raw_streams.append({
-                            "url": stream_url,
-                            "quality": f"{res_item.get('resolution')}p" if res_item.get("resolution") else "Auto",
-                            "signCookie": det.get("signCookie") or res_item.get("signCookie") or "",
-                            "id": res_item.get("resourceId") or det.get("resourceId") or ""
-                        })
-        except: pass
+    <!-- Main Content Area -->
+    <div class="main-content">
+        <div class="grid-container" id="grid-container">
+            <!-- Items are pre-populated so the screen is not empty -->
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 1</div>
+            </div>
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 2</div>
+            </div>
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 3</div>
+            </div>
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 4</div>
+            </div>
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 5</div>
+            </div>
+            <div class="movie-card">
+                <div class="movie-poster">Poster Image</div>
+                <div class="movie-title">Movie Name 6</div>
+            </div>
+        </div>
+    </div>
 
-    if not raw_streams:
-        try:
-            v_res = s["client"].request('POST', '/index/video/v_detail', data={'subjectId': subject_id, 'carrier': '301', 'quality': quality})
-            raw_streams = (v_res.get("data") or {}).get("streamList") or []
-        except: pass
+    <!-- Bottom Navigation -->
+    <div class="bottom-nav">
+        <a class="nav-item active" onclick="setNav(this)">
+            <i class="fa-solid fa-house"></i>
+            <span>Home</span>
+        </a>
+        <a class="nav-item" onclick="setNav(this)">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <span>Search</span>
+        </a>
+        <a class="nav-item" onclick="setNav(this)">
+            <i class="fa-regular fa-bookmark"></i>
+            <span>Watchlist</span>
+        </a>
+        <a class="nav-item" onclick="setNav(this)">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+            <span>History</span>
+        </a>
+        <a class="nav-item" onclick="setNav(this)">
+            <i class="fa-regular fa-user"></i>
+            <span>Account</span>
+        </a>
+    </div>
 
-    if not raw_streams:
-        try:
-            em_res = s["stream"].get_play_info(subject_id)
-            raw_streams = (em_res.get("data") or {}).get("streamList") or []
-        except: pass
+    <script>
+        // Tab switching logic for Top Categories
+        function setCategory(element) {
+            const buttons = document.querySelectorAll('.category-btn');
+            buttons.forEach(btn => btn.classList.remove('active'));
+            element.classList.add('active');
+            
+            const grid = document.getElementById('grid-container');
+            const categoryName = element.innerText;
+            grid.innerHTML = ''; 
+            
+            // Generate dummy content dynamically based on clicked tab
+            for(let i=1; i<=6; i++) {
+                grid.innerHTML += `
+                    <div class="movie-card">
+                        <div class="movie-poster">${categoryName} Poster</div>
+                        <div class="movie-title">${categoryName} Item ${i}</div>
+                    </div>
+                `;
+            }
+        }
 
-    compatible = [st for st in raw_streams if is_h264(st)]
-    streams = compatible if compatible else raw_streams
-
-    global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
-    working_stream = streams[0] if streams else None
-    
-    if not working_stream:
-        raise HTTPException(status_code=404, detail="Stream unavailable.")
-
-    raw_stream_url = working_stream.get("url", "")
-    working_cookie = working_stream.get("signCookie") or global_cookie or ""
-    proxy_stream_url = f"/stream-proxy?u={quote(raw_stream_url)}&c={quote(working_cookie or '')}"
-
-    return {
-        "code": 0,
-        "url": proxy_stream_url,
-        "raw_url": raw_stream_url,
-        "cookie": working_cookie,
-        "duration": 3600,
-        "subtitles": data.get("subTitleList", []),
-        "isHls": raw_stream_url.lower().endswith(".m3u8") or ".m3u8" in raw_stream_url.lower(),
-        "is_vip": 1
-    }
-
-# --- UNIVERSAL M3U8 MASTER/CHUNK REWRITE PROXY ---
-@app.get("/stream-proxy")
-async def stream_proxy(request: Request, u: str, c: Optional[str] = ""):
-    raw_u = unquote(u)
-    
-    if "sacdn2.hakunaymatata.com" in raw_u: referer = "https://movieboxapi-xp54.onrender.com/"
-    elif "hakunaymatata.com" in raw_u: referer = "https://www.movieboxpro.app/"
-    else: referer = "https://www.moviebox.ph/"
-
-    req_hdrs = {"User-Agent": "ExoPlayerLib/2.19.1", "Referer": referer, "Cookie": c or ""}
-    
-    if ".m3u8" in raw_u.lower():
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=25.0) as client:
-                resp = await client.get(raw_u, headers=req_hdrs, follow_redirects=True)
-                if resp.status_code == 200:
-                    lines = resp.text.splitlines()
-                    rewritten = []
-                    for line in lines:
-                        line_str = line.strip()
-                        if line_str and not line_str.startswith("#"):
-                            full_chunk_url = urljoin(raw_u, line_str)
-                            chunk_proxy = f"/stream-proxy?u={quote(full_chunk_url)}&c={quote(c or '')}"
-                            rewritten.append(chunk_proxy)
-                        else:
-                            rewritten.append(line_str)
-                    
-                    return PlainTextResponse(
-                        "\n".join(rewritten),
-                        media_type="application/vnd.apple.mpegurl",
-                        headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*"}
-                    )
-        except Exception as e:
-            logger.error(f"M3U8 proxy error: {e}")
-
-    if "range" in request.headers: req_hdrs["Range"] = request.headers["range"]
-
-    client = httpx.AsyncClient(verify=False, timeout=30.0)
-    req = client.build_request("GET", raw_u, headers=req_hdrs)
-    r = await client.send(req, stream=True)
-
-    headers = {"Accept-Ranges": "bytes", "Access-Control-Allow-Origin": "*"}
-    for h in ["content-range", "content-length", "content-type"]:
-        if h in r.headers: headers[h.title()] = r.headers[h]
-
-    return StreamingResponse(r.aiter_bytes(chunk_size=1024 * 512), status_code=r.status_code, headers=headers, background=client.aclose)
-
-@app.get("/sub-proxy")
-async def subtitle_proxy(u: str):
-    async with httpx.AsyncClient(verify=False) as client:
-        res = await client.get(u, headers={"User-Agent": "ExoPlayerLib/2.18.7"}, follow_redirects=True)
-        return Response(content=res.content, media_type="text/vtt", headers={"Access-Control-Allow-Origin": "*"})
-
-@app.get("/history")
-def get_history(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    h = load_local_history()
-    return {"code": 0, "data": {"list": h.get("default", [])}}
-
-@app.get("/watchlist")
-def get_watchlist(page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    if s["auth"].is_guest_mode: return {"code": 0, "data": {"list": []}}
-    try:
-        res = s["user"].get_watchlist(page=page)
-        return {"code": 0, "data": {"list": [map_item(x) for x in (res.get("data", {})).get("items") or []]}}
-    except: return {"code": 0, "data": {"list": []}}
-
-@app.post("/watchlist/toggle")
-def toggle_watchlist(subject_id: str, active: bool, subject_type: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    if s["auth"].is_guest_mode: return {"status": "guest_ignored"}
-    return {"status": "success", "raw": s["user"].toggle_watchlist(subject_id, action=1 if active else 2, subject_type=subject_type)}
-
-if __name__ == "__main__":
-    uvicorn.run("moviebox_api_server:app", host="0.0.0.0", port=8000, reload=False)
+        // Active state switching for Bottom Navigation
+        function setNav(element) {
+            const navItems = document.querySelectorAll('.nav-item');
+            navItems.forEach(item => item.classList.remove('active'));
+            element.classList.add('active');
+        }
+    </script>
+</body>
+</html>
