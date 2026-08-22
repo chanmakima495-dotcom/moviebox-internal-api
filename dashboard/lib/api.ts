@@ -172,7 +172,7 @@ export const movieApi = {
     return res.data;
   },
   
-  // --- NEW: Cloud Sync & Advanced Subtitles ---
+  // --- Cloud Sync & Advanced Subtitles ---
   getHistoryPosition: async (subjectId: string, resourceId: string) => {
     const res = await api.get(`/history/position`, { params: { subject_id: subjectId, resource_id: resourceId } });
     return res.data;
