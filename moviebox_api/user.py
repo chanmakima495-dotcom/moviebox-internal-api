@@ -5,7 +5,7 @@ class MovieBoxUser:
     def __init__(self, client: MovieBoxClient):
         self.client = client
 
-        def get_profile(self) -> Dict:
+            def get_profile(self) -> Dict:
         """Fetches comprehensive user profile with VIP status injected."""
         res = self.client.request(
             "GET",
@@ -21,8 +21,6 @@ class MovieBoxUser:
             res["vip"] = 1
             res["user_type"] = "vip"
         return res
-
-
     def get_history(self, page: int = 1, per_page: int = 20) -> Dict:
         """
         Fetches watch history ('Watched').
