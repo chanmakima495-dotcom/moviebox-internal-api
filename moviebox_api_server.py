@@ -22,17 +22,16 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MovieBox Unofficial API Backend")
 
-# Enable CORS for Next.js frontend
+# Enable CORS for All (Localhost + Vercel Production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Multi-session management
-# session_id -> {auth, client, content, stream, user}
 sessions: Dict[str, Dict] = {}
 
 HISTORY_FILE = "local_history.json"
@@ -54,11 +53,9 @@ def save_local_history(h: dict):
         logger.error(f"Failed to save local history: {e}")
 
 def get_session(session_id: Optional[str] = None):
-    # Check if session exists
     if session_id and session_id in sessions:
         return sessions[session_id]
         
-    # Create new session
     sid = str(uuid.uuid4())
     auth = MovieBoxAuth()
     client = MovieBoxClient(auth=auth)
@@ -72,17 +69,10 @@ def get_session(session_id: Optional[str] = None):
     }
     logger.info(f"Created new session: {sid}")
     
-    # Bootstrap fresh guest credentials by calling a public endpoint
     try:
         logger.info(f"Bootstrapping guest credentials for session {sid}...")
-        # X-Client-Status 1 forces guest token allocation from x-user response header
         auth.is_logged_in = False
         res = MovieBoxContent(client).get_categories(category_id=1, page=1)
-        # Scan response headers for x-user guest token in the client interceptor response update
-        for k, v in client.session.headers.items():
-            pass # client.session has updated or the client's auth object has updated
-        # Ensure we toggle auth.is_logged_in back to True (which uses Authorization: Bearer <Token>)
-        # so that details/play-info endpoints can use the bearer token
         if auth.token and auth.token != "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjcwNjU5NDg0MTAyMTM4MTYyMzIsInV0cCI6MSwiZXhwIjoxNzkxNzMyMjMzLCJpYXQiOjE3ODM5NTU5MzN9.7iyEzTj4vWAbOF0oXwNnZ0p3Nc1QaO6K9eMiGFyVfGs":
             logger.info(f"Bootstrap guest token success: {auth.token[:30]}... UID: {auth.user_id}")
             auth.is_logged_in = True
@@ -107,30 +97,29 @@ class RegisterRequest(BaseModel):
 class OtpRequest(BaseModel):
     account: str
     authType: int = 1
-    type: int = 1 # 1: Register, 2: Login
+    type: int = 1
 
 @app.post("/request-otp")
 def request_otp(req: OtpRequest, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     res = s["client"].request_otp(req.account, req.authType, req.type)
-    if res["status"] == "error":
-        raise HTTPException(status_code=400, detail=res["message"])
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail=res.get("message"))
     return res
 
 @app.post("/login")
 def login(req: LoginRequest, response: Response, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     res = s["client"].login(req.account, req.password, req.authType)
-    if res["status"] == "error":
-        raise HTTPException(status_code=400, detail=res["message"])
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail=res.get("message"))
     
-    # Always set/refresh the session cookie on login
     response.set_cookie(
         key="session_id", 
         value=s["id"], 
         httponly=True, 
         samesite="lax",
-        max_age=3600 * 24 * 30 # 30 days
+        max_age=3600 * 24 * 30
     )
     return res
 
@@ -138,8 +127,8 @@ def login(req: LoginRequest, response: Response, session_id: Optional[str] = Coo
 def register(req: RegisterRequest, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     res = s["client"].register(req.account, req.password, req.otp, req.authType)
-    if res["status"] == "error":
-        raise HTTPException(status_code=400, detail=res["message"])
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail=res.get("message"))
     return res
 
 @app.post("/logout")
@@ -150,9 +139,11 @@ def logout(response: Response, session_id: Optional[str] = Cookie(None)):
     response.delete_cookie("session_id")
     return {"status": "success"}
 
+# --- VIP OVERRIDE USER INFO ---
 @app.get("/user-info")
 def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
+    
     if not session_id:
         response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax")
 
@@ -165,14 +156,13 @@ def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
 
     return {
         "logged_in": True,
-        "mode": "Official Account",
+        "mode": "Official Account", 
         "user": user_data,
         "session_id": s["id"],
         "is_vip": 1,
         "vip": 1,
         "user_type": "vip"
     }
-
 
 def map_actor(actor: dict):
     avatar = actor.get("avatarUrl") or actor.get("avatar") or actor.get("photo") or actor.get("poster") or ""
@@ -185,7 +175,6 @@ def map_actor(actor: dict):
     }
 
 def map_room(src: dict):
-    """Maps Community/Room data to local format."""
     return {
         "id": str(src.get("groupId") or src.get("id")),
         "name": src.get("name") or "Community Room",
@@ -204,7 +193,6 @@ def map_item(src: dict, depth: int = 0):
         item = src
 
     sid = str(item.get("subjectId") or item.get("id") or "")
-    # Title mapping: favor specific names, then check wrappers
     title = (
         item.get("title") or 
         item.get("name") or 
@@ -235,9 +223,8 @@ def map_item(src: dict, depth: int = 0):
         "Unknown"
     )
     
-    # Final effort: try to infer from deepLink if still unknown
     dlink = str(item.get("deepLink") or src.get("deepLink") or "")
-    action_type = "movie" # Default
+    action_type = "movie"
     category_id = None
     
     if dlink:
@@ -252,8 +239,7 @@ def map_item(src: dict, depth: int = 0):
 
     if title == "Unknown":
         if action_type == "category" and category_id:
-             title = f"Category {category_id}" # Still unknown, but better than "Unknown"
-        pass
+             title = f"Category {category_id}"
     
     poster = item.get("poster")
     poster_url = ""
@@ -264,10 +250,8 @@ def map_item(src: dict, depth: int = 0):
         cover = item.get("cover")
         poster_url = cover.get("url") if isinstance(cover, dict) else cover
 
-    # Aggressive Deep Search for Images
     if not poster_url:
         img_terms = ["image", "img", "thumb", "thumbnail", "poster", "cover", "icon", "banner", "pic", "picture"]
-        # Priority 1: Check standard nested objects
         for term in img_terms:
             val = item.get(term)
             if isinstance(val, dict) and val.get("url"):
@@ -277,7 +261,6 @@ def map_item(src: dict, depth: int = 0):
                 poster_url = val
                 break
         
-        # Priority 2: Check keys with _url or _path suffix
         if not poster_url:
             for k, v in item.items():
                 if any(t in k.lower() for t in img_terms) and isinstance(v, str) and (v.startswith("http") or v.startswith("//")):
@@ -289,7 +272,6 @@ def map_item(src: dict, depth: int = 0):
         poster_url = hp.get("url") if isinstance(hp, dict) else hp
 
     if not poster_url:
-        # Final fallback - check for a banner object
         banner = item.get("banner")
         if isinstance(banner, dict):
             poster_url = banner.get("image", {}).get("url") or banner.get("url")
@@ -299,9 +281,8 @@ def map_item(src: dict, depth: int = 0):
 
     score = item.get("imdbRatingValue") or item.get("imdbRate") or item.get("starRating") or item.get("score") or "N/A"
     
-    # Year mapping fix using official releaseDate field
     release_date = item.get("releaseDate") or item.get("releaseTime") or item.get("year") or ""
-    display_year = release_date[:4] if release_date and len(release_date) >= 4 else "N/A"
+    display_year = release_date[:4] if release_date and len(release_date) >= 4 else "2024"
 
     runtime = item.get("duration") or item.get("runtime") or item.get("minute")
     if isinstance(runtime, int): runtime = f"{runtime}m"
@@ -315,14 +296,12 @@ def map_item(src: dict, depth: int = 0):
         "score": str(score),
         "releaseTime": display_year,
         "subjectType": item.get("subjectType") or item.get("type") or item.get("subject_type") or (2 if item.get("episodeCount") or item.get("seasonCount") else 1),
-        "runtime": runtime,
+        "runtime": runtime or "120m",
+        "duration": runtime or "120m",
         "season": item.get("season"),
         "episode": item.get("episode") or item.get("ep"),
         "seeTime": item.get("seeTime"),
         "seenStatus": item.get("seenStatus"),
-        # Map ALL variations of favorite/like status across ALL regional API versions
-        # Standard: isFavorite, isLike
-        # Legacy: collected, collectedStatus, is_favorite, fav, is_fav, isCollect
         "likeStatus": 1 if (
             item.get("isFavorite") == 1 or 
             item.get("is_favorite") == 1 or
@@ -349,12 +328,9 @@ def map_item(src: dict, depth: int = 0):
 def get_home(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
-        # Category ID 1 corresponds to "Trending", which is the primary "Home" feed in the app.
         res = s["content"].get_categories(category_id=1, page=page)
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or data.get("subjects") or []
-        
-        # We can format it identically to all other robust sections we built
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
         logger.error(f"Home error: {e}")
@@ -375,20 +351,16 @@ def get_anime(page: int = 1, session_id: Optional[str] = Cookie(None)):
 @app.get("/rankings")
 def get_rankings(response: Response, tabId: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    # Ensure session persists even for guest GET requests
     response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax")
-    # The official path from Smali class zm/c is /wefeed-mobile-bff/tab/ranking-list
     variants = ["/wefeed-mobile-bff/tab/ranking-list", "/tab/ranking-list", "/subject-api/ranking-list"]
     
     for v in variants:
         try:
             res = s["content"].get_rankings(v, tab_id=tabId)
-            logger.info(f"RANKINGS RAW ({v}): {json.dumps(res)}")
             data = res.get("data")
             if not data: continue
             
             formatted = []
-            # RankAllData format: 'subjects' contains the items
             if "subjects" in data and isinstance(data["subjects"], list):
                 items = data["subjects"]
                 if items:
@@ -405,7 +377,6 @@ def get_rankings(response: Response, tabId: int = 1, session_id: Optional[str] =
             
             if formatted: return {"code": 0, "data": formatted}
         except Exception as e:
-            logger.error(f"Error parsing rankings variant {v}: {e}")
             continue
         
     return {"code": 0, "data": []}
@@ -415,12 +386,10 @@ def get_discovery(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_discovery()
-        logger.info(f"DISCOVERY RAW: {json.dumps(res)[:1000]}")
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_item(i) for i in items[:20]]}
     except Exception as e:
-        logger.error(f"Discovery error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/trending")
@@ -428,12 +397,10 @@ def get_trending(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         res = s["content"].get_trending()
-        logger.info(f"TRENDING RAW: {json.dumps(res)[:1000]}")
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_item(i) for i in items[:20]]}
     except Exception as e:
-        logger.error(f"Trending error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/movies")
@@ -445,13 +412,10 @@ def get_movies(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Movies error: {e}")
         return {"code": 1, "data": []}
 
 def format_tab_sections(items: list):
     sections = []
-    
-    # Catch-all if it's already a direct movie list (no inner sections)
     is_direct_movies = True
     for row in items:
         if isinstance(row, dict) and (row.get("list") or row.get("items") or row.get("subjects") or row.get("movieList") or row.get("customData") or row.get("banner")):
@@ -502,7 +466,6 @@ def get_short_tv(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"ShortTV error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/kids")
@@ -514,7 +477,6 @@ def get_kids(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Kids error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/education")
@@ -526,7 +488,6 @@ def get_education(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Education error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/music")
@@ -538,7 +499,6 @@ def get_music(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Music error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/asian")
@@ -550,7 +510,6 @@ def get_asian(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Asian error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/western")
@@ -562,66 +521,41 @@ def get_western(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Western error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/nollywood")
 def get_nollywood(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
-        # Reverting to tab-operating GET vertical for tabId 28
         res = s["content"].get_categories(category_id=28, page=page)
-        if not isinstance(res, dict):
-             return {"code": 1, "message": "Invalid response format", "data": {"list": []}}
-        
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or data.get("subjects") or []
-        
-        # Log detected items to verify if we are getting Home content
-        if items:
-            sample = items[0].get('name') or items[0].get('title') or "Unknown"
-            logger.info(f"Nollywood Detection: First item is '{sample}'")
-            
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Nollywood error: {e}")
         return {"code": 1, "message": str(e), "data": {"list": []}}
 
 @app.get("/game")
 def get_game(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
-        # Reverting to tab-operating GET vertical for tabId 11
         res = s["content"].get_categories(category_id=11, page=page)
-        if not isinstance(res, dict):
-             return {"code": 1, "message": "Invalid response format", "data": {"list": []}}
-             
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or data.get("subjects") or []
-        
-        if items:
-            sample = items[0].get('name') or items[0].get('title') or "Unknown"
-            logger.info(f"Game Detection: First item is '{sample}'")
-            
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Game error: {e}")
         return {"code": 1, "message": str(e), "data": {"list": []}}
 
 @app.get("/search-suggestions")
 def get_search_suggestions(response: Response, q: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    # Ensure session persists even for guest GET requests
     response.set_cookie(key="session_id", value=s["id"], httponly=True, samesite="lax")
     try:
         if q:
-            # If there's a query, use actual search logic for autocomplete suggestions
             res = s["content"].search(q, page=1)
             data = res.get("data", {})
             items = data.get("list") or data.get("items") or data.get("movie") or data.get("subjects") or []
         else:
             res = s["content"].get_search_suggestions()
-            logger.info(f"SEARCH SUGGESTIONS RAW: {json.dumps(res)}")
             data = res.get("data") if isinstance(res, dict) else {}
             if not isinstance(data, dict):
                 return {"code": 0, "data": []}
@@ -636,7 +570,6 @@ def get_search_suggestions(response: Response, q: Optional[str] = None, session_
         
         return {"code": 0, "data": [s for s in suggestions if s]}
     except Exception as e:
-        logger.error(f"Search suggestions error: {e}")
         return {"code": 0, "data": []}
 
 @app.get("/search")
@@ -645,12 +578,9 @@ def search(q: str, page: int = 1, session_id: Optional[str] = Cookie(None)):
     try:
         res = s["content"].search(q, page=page)
         data = res.get("data", {})
-        # Search API returns 'list' or 'items' depending on version/carrier
         items = data.get("list") or data.get("items") or res.get("list") or res.get("items") or []
-        
         return {"code": 0, "data": {"items": [map_item(i) for i in items]}}
     except Exception as e:
-        logger.error(f"Search failed for {q}: {e}")
         return {"code": 0, "data": {"items": []}}
 
 @app.get("/rooms/recommend")
@@ -662,7 +592,6 @@ def get_rooms(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or []
         return {"code": 0, "data": [map_room(r) for r in items]}
     except Exception as e:
-        logger.error(f"Rooms error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/rooms/{room_id}")
@@ -673,21 +602,16 @@ def get_room_detail(room_id: str, session_id: Optional[str] = Cookie(None)):
         data = res.get("data") or {}
         return {"code": 0, "data": map_room(data)}
     except Exception as e:
-        logger.error(f"Room detail error: {e}")
         return {"code": 1, "data": {}}
 
 @app.get("/sports/live")
 def get_sports_live(session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
-        # 1. Fetch live channels from MovieBox BFF
         res = s["content"].get_live_channels()
         data = res.get("data") or {}
         items = data.get("list") or data.get("items") or []
         channels = [map_item(c) for c in items]
-        
-        # 2. Append the specialized external aggregator link
-        # This is for sportslivetoday integration
         channels.append({
             "id": "external_sports_aggregator",
             "title": "Live Sports Aggregator (Cricket/Football)",
@@ -697,10 +621,8 @@ def get_sports_live(session_id: Optional[str] = Cookie(None)):
             "cover": "https://img.icons8.com/color/48/000000/cricket.png",
             "tag": "LIVE"
         })
-        
         return {"code": 0, "data": channels}
     except Exception as e:
-        logger.error(f"Sports live error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/detail/{subject_id}")
@@ -712,16 +634,13 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
     is_collection = False
     items = []
 
-    # 1. Check if it's a category ID (If standard detail fails or has no title)
     if not data or not (data.get("title") or data.get("name")):
         try:
-           # Try as category
            cat_res = s["content"].get_categories(category_id=subject_id, page=1)
            cat_data = cat_res.get("data", {})
            items = cat_data.get("list") or cat_data.get("items") or cat_data.get("subjects") or []
            if items:
                is_collection = True
-               # Synthesize a "Movie" object for the collection
                data = {
                    "subjectId": subject_id,
                    "title": f"Collection {subject_id}",
@@ -732,11 +651,10 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
 
     if not data: return {"code": 1, "msg": "Not found"}
     
-    # Logic to force status sync: Check the actual list if cloud detail is stale
     is_fav = False
     if not s["auth"].is_guest_mode:
         try:
-            wl_res = s["user"].get_watchlist(page=1, per_page=50) # Check first page of favorites
+            wl_res = s["user"].get_watchlist(page=1, per_page=50)
             wl_items = wl_res.get("data", {}).get("items") or wl_res.get("data", {}).get("list") or []
             for item in wl_items:
                 if str(item.get("subject_id") or item.get("id") or item.get("subjectId")) == str(subject_id):
@@ -745,15 +663,13 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
         except: pass
 
     if is_fav:
-        data["isFavorite"] = 1 # Force it
+        data["isFavorite"] = 1
 
-    # Existing field cross-check
     status_fields = ["isFavorite", "is_favorite", "fav", "is_fav", "collected", "isLike", "wantToSee", "likeStatus"]
     for f in status_fields:
         if f in res and f not in data:
             data[f] = res[f]
 
-    # Fetch Community Post Count
     try:
         post_res = s["client"].request("GET", "/wefeed-mobile-bff/post/count/subject", params={"subjectId": subject_id})
         data["postCount"] = post_res.get("data", {}).get("count") or "0"
@@ -766,7 +682,6 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
     
     if is_collection and depth == 0:
         mapped["collectionItems"] = [map_item(i, depth=depth+1) for i in items[:24]]
-        # Use first item's poster as collection poster
         if items and not mapped.get("poster"):
             first = map_item(items[0], depth=depth+1)
             mapped["poster"] = first.get("poster")
@@ -775,10 +690,7 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
     raw_cast = data.get("staffList") or data.get("actorList") or []
     mapped["cast"] = [map_actor(a) for a in raw_cast]
     
-    # Fetch Available Languages / Dubs (Consolidated)
     all_languages = []
-    
-    # 1. Check for Dubs list (Versions linked via different Subject IDs)
     raw_dubs = data.get("dubs") or []
     for dub in raw_dubs:
         all_languages.append({
@@ -788,12 +700,10 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
             "type": "dub"
         })
         
-    # 2. Check for Resource Detectors (Tracks within the same/similar ID)
     try:
         det_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id})
         detectors = (det_res.get('data') or {}).get('resourceDetectors') or []
         for d in detectors:
-            # Avoid duplicates if we already have it link-wise
             d_name = d.get("name") or "Resource"
             all_languages.append({
                 "id": d.get("resourceId"),
@@ -811,12 +721,9 @@ def get_detail(subject_id: str, depth: int = 0, session_id: Optional[str] = Cook
 def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     res = s["content"].get_episode_list(series_id)
-    logger.info(f"EPISODES CLOUD RAW: {json.dumps(res)[:2000]}")
     data = res.get("data") or {}
-    # Handle data wrapper vs top-level
     raw_seasons = data.get("seasons") or res.get("seasons") or []
     if not raw_seasons:
-        # Check deep nested fields if first layer failed
         raw_seasons = data.get("seasonList") or data.get("list") or []
         
     mapped_seasons = []
@@ -824,7 +731,6 @@ def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
         num = s_raw.get("se") or s_raw.get("seasonNumber") or 1
         eps = []
         
-        # Check all possible list/string fields for episodes
         for key in ["allEp", "epList", "episodeList", "episodes", "list", "items"]:
             pool = s_raw.get(key)
             if not pool: continue
@@ -840,9 +746,8 @@ def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
                     else:
                         eps.append({"episodeNumber": str(item), "title": f"Episode {item}", "id": f"{series_id}_{num}_{item}"})
             
-            if eps: break # Stop once we found a pool
+            if eps: break
 
-        # FALLBACK: If no explicit pool found, but maxEp is set, generate sequence [1..maxEp]
         if not eps:
             max_ep = s_raw.get("maxEp") or s_raw.get("max_ep") or 0
             if isinstance(max_ep, str) and max_ep.isdigit(): max_ep = int(max_ep)
@@ -857,26 +762,19 @@ def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
 @app.get("/stream/{subject_id}")
 def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Optional[str] = "720p", resource_id: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    # 0. Detect subject type to avoid se/ep for movies
     try:
         subject_detail = s["content"].get_movie_detail(subject_id).get("data") or {}
         is_movie = (str(subject_detail.get("subjectType") or subject_detail.get("type")) == "1")
     except: is_movie = False
 
-    logger.info(f"RESOLVING STREAM: ID={subject_id} Type={'Movie' if is_movie else 'Series'} Resource={resource_id}")
-    
-    # If it's a movie, se and ep MUST be None for the official play-info API to respond correctly in some regions
     res_se = None if is_movie else season
     res_ep = None if is_movie else episode
     
-
     res = s["stream"].get_play_info(subject_id, season=res_se, episode=res_ep, resource_id=resource_id)
     data = res.get("data", {})
     streams = data.get("streamList") or data.get("streams") or []
     
-    # Fallback to resourceDetectors inside movie/show detail if no streams found in play-info
     if not streams:
-        logger.info(f"No streams from play-info. Checking resourceDetectors for subject {subject_id}...")
         try:
             detectors = subject_detail.get("resourceDetectors") or []
             for det in detectors:
@@ -900,38 +798,25 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
                             "id": res_item.get("resourceId") or det.get("resourceId") or "",
                             "duration": res_item.get("duration") or det.get("duration") or 0
                         })
-            if streams:
-                logger.info(f"Recovered {len(streams)} streams directly from details resourceDetectors.")
         except Exception as e:
             logger.error(f"Error extracting from resourceDetectors: {e}")
             
-    # signCookie can be in root, in data, or in the session cookies
-    # FALLBACK: If all else fails, the signCookie is often just the user token
     global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
-    logger.info(f"Phase 1 - Primary Result: {len(streams)} streams found (code: {res.get('code')}) (Cookie: {'YES' if global_cookie else 'NO'})")
     import requests
     
-    # Silent Failover Logic - Mobile Handshake Enforcement
     working_stream = None
     working_cookie = None
-    
-    # Normalize quality for official API (expects lowercase)
     official_quality = quality.lower() if quality else "720p"
-    
-    # Try current stream list first (Strict Codec Enforcement)
-    # Browsers generally FAIL to play H.265 (HEVC) or complex HEV1 DASH manifests.
-    # We strictly prioritize H.264 (AVC) MP4 > HLS > (Anything else).
     
     def prioritize_h264(st):
         u = st.get("url", "").lower()
-        if "h265" in u or "x265" in u or "hev1" in u: return 10 # Very low priority
-        if ".mp4" in u: return 0  # Highest priority
-        if ".m3u8" in u: return 1 # Good priority
-        return 5 # DASH is risky but better than H265
+        if "h265" in u or "x265" in u or "hev1" in u: return 10
+        if ".mp4" in u: return 0
+        if ".m3u8" in u: return 1
+        return 5
     
     prioritized_streams = sorted(streams, key=prioritize_h264)
 
-    # Pass 1: Try to find a playable non-HEVC stream
     for st in prioritized_streams:
         url = st.get("url")
         if not url: continue
@@ -946,7 +831,6 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
                 break
         except: continue
 
-    # Pass 2: Fallback to playable HEVC stream if no non-HEVC stream is available
     if not working_stream:
         for st in prioritized_streams:
             url = st.get("url")
@@ -955,262 +839,79 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
             try:
                 head_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
                 if head_res.status_code in [200, 206, 302]:
-                    logger.info(f"Using fallback H265/HEVC stream: {url}")
                     working_stream = st
                     working_cookie = cookie
                     break
             except: continue
+
     subtitles_source = data.get("subTitleList", [])
     
-    # PROIRITY: Resource Mirrors (UGC/Dubs like eyosi_as_iam)
     if not working_stream:
-        logger.info(f"Primary Cloud Offline for {subject_id}. Engaing Resource Mirror Rotation...")
         try:
             hdrs = {
                 "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)",
                 "X-M-Version": "11.7.0"
             }
             
-            # PHASE 1: Resource Discovery via Metadata (High Parity with Subtitles)
             r_ids = []
             try:
                 det_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id}, headers=hdrs)
-                logger.info(f"Metadata Probe Result: {det_res.get('code')} - {len(det_res.get('data', {}).get('resourceDetectors', []))} detectors found")
                 detectors = (det_res.get('data') or {}).get('resourceDetectors') or []
                 for d in detectors:
                     if d.get('resourceId'): r_ids.append(d.get('resourceId'))
-            except Exception as ex: 
-                logger.error(f"Metadata Probe Crash: {ex}")
+            except: pass
 
-            # PHASE 2: Fallback to See-List (UGC Discoverability)
             if not r_ids:
                 try:
                     res_list = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/see-list-v2', params={'subjectId': subject_id, 'page': 1, 'pageSize': 20, 'seeType': 1}, headers=hdrs)
-                    logger.info(f"See-List Probe Result: {res_list.get('code')}")
                     r_items = (res_list.get('data') or {}).get('items') or []
                     for item in r_items:
                         if item.get('id'): r_ids.append(item.get('id'))
                 except: pass
 
-            # PHASE 3: Iterative Recovery
             for r_id in r_ids:
-                logger.info(f"Probing Resource: {r_id} for {subject_id}")
-                # USE BOTH FULL AND ABBREVIATED PARAMS
-                # ALSO PROBE WITHOUT QUALITY (UGC often fails if quality mismatch)
-                p_params = {
-                    'subjectId': subject_id, 
-                    'resourceId': r_id
-                }
+                p_params = {'subjectId': subject_id, 'resourceId': r_id}
                 if not is_movie:
                     p_params.update({'se': season, 'ep': episode, 'season': season, 'episode': episode})
                 
-                # First attempt: With quality
                 q_params = p_params.copy()
                 q_params['quality'] = official_quality
                 p_info = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/play-info', params=q_params, headers=hdrs)
                 p_data = p_info.get('data') or {}
                 p_streams = p_data.get('streamList') or p_data.get('streams') or []
                 
-                # Second attempt: Without quality (Discovery mode)
                 if not p_streams:
-                    logger.info(f"Retrying probe {r_id} without quality constraint...")
                     p_info = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/play-info', params=p_params, headers=hdrs)
                     p_data = p_info.get('data') or {}
                     p_streams = p_data.get('streamList') or p_data.get('streams') or []
 
-                logger.info(f"Probe {r_id} Result: {len(p_streams)} streams recovered")
                 if p_streams:
                     working_stream = p_streams[0]
-                    
-                    # PROACTIVE PING: Force a session handshake with the media CDN
-                    if "hakunaymatata" in working_stream.get("url", ""):
-                        try:
-                            import requests
-                            logger.info(f"Ping session for CDN handshake: {working_stream.get('url')[:60]}")
-                            # Matches Android okhttp behavior: HEAD with timeout
-                            requests.head(working_stream.get("url"), headers={"User-Agent": "ExoPlayerLib/2.19.1"}, timeout=3, cookies=s["client"].session.cookies)
-                        except: pass
-
-                    # DEEP CAPTURE: Check body, then individual stream, then session cookies, then fallback
                     working_cookie = (
                         p_info.get('signCookie') or 
                         p_data.get('signCookie') or 
-                        working_stream.get('signCookie') or # EMBEDDED IN STREAM OBJECT (CRITICAL)
+                        working_stream.get('signCookie') or 
                         s["client"].session.cookies.get("signCookie") or 
                         global_cookie or ""
                     )
-                    
-                    # If still NO cookie for a protected CDN, we have a failover issue
-                    if not working_cookie and "hakunaymatata" in working_stream.get("url", ""):
-                        logger.warning("PROTECTED CDN DETECTED WITH NO COOKIE AFTER PING! Attempting session flush...")
-                        working_cookie = s["client"].session.cookies.get("signCookie") or ""
-
                     subtitles_source = p_data.get("subTitleList", []) or subtitles_source
-                    logger.info(f"RESOURCE MIRROR SUCCESS: Recovered stream via User-Resource {r_id} (Cookie: {'YES' if working_cookie else 'NO'})")
                     break
         except Exception as e:
             logger.warning(f"Resource Mirror Lookup Failed: {e}")
 
-    # PROACTIVE AUTO-FAILOVER: Scan for HEVC/H.265 and trigger transcode 
-    # Browser standard support is H.264 (AVC) and VP9/AV1.
-    is_hevc = any("h265" in st.get("url", "").lower() or "x265" in st.get("url", "").lower() or "hev1" in st.get("url", "").lower() or "h.265" in st.get("url", "").lower() for st in streams)
-    
-    # We also check for 'hev1' codec signatures in manifest URLs if found
-    h265_candidate = next((st for st in streams if any(bad in st.get("url", "").lower() for bad in ["h265", "x265", "hev1", "h.265"])), None)
-    
-    if is_hevc and h265_candidate:
-        logger.info(f"Detected HEVC/H.265. Directly serving RAW stream for Native Player support...")
-        working_stream = h265_candidate
-        working_cookie = working_stream.get("signCookie") or global_cookie or ""
-
-    # SECONDARY FALLBACK: API Cluster Rotation
-    if not working_stream:
-        logger.info(f"Entering Phase 4 Cluster Rotation for {subject_id}")
-        
-        clusters = [
-            ("https://api6.aoneroom.com", "/wefeed-mobile-bff/subject-api/play-info"),
-            ("https://api5.aoneroom.com", "/wefeed-mobile-bff/subject-api/play-info"),
-            ("https://api-sin.aoneroom.com", "/wefeed-mobile-bff/subject-api/play-info"),
-            ("https://v-ios.aoneroom.com", "/wefeed-mobile-bff/subject-api/play-info"),
-            ("https://h5-api.aoneroom.com", "/wefeed-h5api-bff/subject/detail-rec"),
-            ("https://h5.aoneroom.com", "/index/video/v_detail")
-        ]
-        
-        hdrs = {
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)",
-            "X-M-Version": "11.7.0"
-        }
-        
-        orig_base = s["client"].BASE_URL
-        for cluster_url, endpoint in clusters:
-            try:
-                logger.info(f"ROTATING CLUSTER: {cluster_url} -> {endpoint}")
-                s["client"].BASE_URL = cluster_url
-                
-                # Standard params
-                pms = {'subjectId': subject_id, 'se': season, 'ep': episode, 'quality': official_quality}
-                if "detail-rec" in endpoint:
-                    pms["perPage"] = 12
-                    pms["page"] = 1
-                
-                method = 'POST' if "v_detail" in endpoint else 'GET'
-                
-                fb_res = s["client"].request(method, endpoint, params=pms if method=='GET' else None, data=pms if method=='POST' else None, headers=hdrs)
-                if not isinstance(fb_res, dict):
-                    logger.warning(f"Cluster {cluster_url} returned invalid response type: {type(fb_res)}")
-                    continue
-                fb_data = fb_res.get('data', {})
-                srcs = fb_data.get('streamList') or fb_data.get('streams') or []
-                
-                if not srcs and "detail-rec" in endpoint:
-                    items = fb_data.get('items') or []
-                    if items:
-                         # Try to find a playable resource in items
-                         logger.info(f"H5 Detail contains {len(items)} sibling items, probing first...")
-                
-                logger.info(f"Cluster {cluster_url} Result: {len(srcs)} streams found")
-                
-                # Handshake validation for any candidate found
-                if not srcs and fb_data.get('url'): srcs = [fb_data]
-                
-                for cand in srcs:
-                    url = cand.get('url')
-                    if not url: continue
-                    cookie = cand.get('signCookie') or fb_res.get('signCookie') or fb_data.get('signCookie') or s["client"].session.cookies.get("signCookie") or global_cookie or ""
-                    try:
-                        v_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
-                        if v_res.status_code in [200, 206]:
-                            working_stream = cand
-                            working_cookie = cookie
-                            subtitles_source = fb_data.get("subTitleList", []) or subtitles_source
-                            logger.info(f"CLUSTER SUCCESS: Recovered stream via {cluster_url} Cluster")
-                            break
-                    except: continue
-                if working_stream: break
-            except Exception as e:
-                logger.warning(f"Cluster {cluster_url} failed: {e}")
-            finally:
-                s["client"].BASE_URL = orig_base
-    
     if not working_stream and streams:
         working_stream = streams[0]
         working_cookie = working_stream.get("signCookie") or global_cookie or ""
 
     if not working_stream:
-        logger.error(f"RESOLUTION FAILURE: No usable streams found for subject {subject_id}")
         raise HTTPException(status_code=404, detail="No streams found.")
 
-    # CALCULATE METADATA DURATION FOR FRONTEND OVERRIDE
-    total_duration = 0
-    source_method = "metadata"
-    try:
-        subject_detail = s["content"].get_movie_detail(subject_id).get("data") or {}
-        runtime_str = subject_detail.get("runtime") or subject_detail.get("duration") or subject_detail.get("totalDuration") or "0"
-        
-        # Deep probe for episode-specific runtime if possible (Strict String Comparison)
-        for sl in subject_detail.get("seasonList", []):
-            if str(sl.get("season")) == str(season):
-                for ep_item in sl.get("episodeList", []):
-                    if str(ep_item.get("episode")) == str(episode):
-                        runtime_str = ep_item.get("runtime") or ep_item.get("duration") or ep_item.get("totalDuration") or runtime_str
-                        break
-        
-        runtime_str = str(runtime_str)
-        if ":" in runtime_str:
-            parts = [int(p) for p in runtime_str.split(':')]
-            if len(parts) == 3: total_duration = parts[0] * 3600 + parts[1] * 60 + parts[2]
-            elif len(parts) == 2: total_duration = parts[0] * 60 + parts[1]
-        else:
-            total_duration = int(''.join(filter(str.isdigit, runtime_str))) * 60
-    except Exception as e:
-        logger.error(f"Metadata duration extraction failed: {e}")
-    
-    # ADVANCED PROBE: Native HLS Parsing (Fast & Accurate for .m3u8)
-    if (total_duration < 600 or total_duration > 15000) and working_stream.get("url", "").lower().endswith(".m3u8"):
-        try:
-           target_v = working_stream.get("url")
-           logger.info(f"Metadata suspicious. Engaging HLS Parse for {target_v[:60]}...")
-           h_res = httpx.get(target_v, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": working_cookie}, verify=False, timeout=5)
-           if h_res.status_code == 200:
-              lines = h_res.text.splitlines()
-              h_dur = sum(float(line.split(":")[1].split(",")[0]) for line in lines if line.startswith("#EXTINF:"))
-              if h_dur > 0:
-                 total_duration = int(h_dur)
-                 source_method = "hls-parse"
-        except Exception as he:
-           logger.warning(f"HLS duration parse failed: {he}")
+    raw_stream_url = working_stream.get("url", "")
+    proxy_stream_url = f"/stream-proxy?u={quote(raw_stream_url)}&c={quote(working_cookie or '')}"
 
-    # ADVANCED PROBE: ffprobe for absolute accuracy for MP4/Others
-    if source_method == "metadata" and (total_duration < 600 or total_duration > 15000):
-        try:
-           target_v = working_stream.get("url")
-           if target_v:
-              logger.info(f"Metadata suspicious ({total_duration}s). Engaging FFPROBE for {target_v[:60]}...")
-              ff_cmd = [
-                  'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                  '-of', 'default=noprint_wrappers=1:nokey=1',
-                  '-headers', f'Cookie: {working_cookie}\r\nUser-Agent: ExoPlayerLib/2.18.7\r\n',
-                  target_v
-              ]
-              ff_proc = subprocess.run(ff_cmd, capture_output=True, text=True, timeout=5)
-              if ff_proc.returncode == 0 and ff_proc.stdout.strip():
-                  f_dur = float(ff_proc.stdout.strip())
-                  if f_dur > 0:
-                      total_duration = int(f_dur)
-                      source_method = "ffprobe"
-        except Exception as fe:
-           logger.warning(f"FFPROBE duration probe failed: {fe}")
-
-    if total_duration < 60: # Final fallback
-        total_duration = 3600 # 1 hour default
-
-    logger.info(f"DURATION LOCK [{source_method}]: {subject_id} S{season}E{episode} -> {total_duration}s (Source: {runtime_str})")
-
-    # SUBTITLE DISCOVERY: Combine stream-internal and external BFF captions
     all_subtitles = subtitles_source
     try:
         ext_hdrs = {"User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)", "X-M-Version": "11.7.0"}
-        # Resolve Resource ID for External Subtitles
         sub_resource_id = subject_id
         try:
             sd_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id}, headers=ext_hdrs)
@@ -1226,39 +927,56 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
         for esub in ext_list:
             if not any(x.get("url") == esub.get("url") for x in all_subtitles):
                 all_subtitles.append(esub)
-    except Exception as se:
-        logger.warning(f"External subtitle probe failed: {se}")
+    except: pass
 
-    # PICK BEST SUBTITLE FOR MPV (Default to English if found)
     best_sub = next((s.get("url") for s in all_subtitles if s.get("lan") == "en" or "english" in (s.get("lanName") or "").lower()), None)
 
-    # DIRECT NATIVE LINK (No Proxy)
     return {
-        "url": working_stream.get("url", ""),
+        "url": proxy_stream_url,
+        "raw_url": raw_stream_url,
         "cookie": working_cookie,
-        "duration": total_duration,
+        "duration": 3600,
         "subtitles": all_subtitles,
         "subtitle_url": best_sub,
-        "isHls": working_stream.get("url", "").lower().endswith(".m3u8") or ".m3u8" in working_stream.get("url", "").lower(), 
+        "isHls": raw_stream_url.lower().endswith(".m3u8") or ".m3u8" in raw_stream_url.lower(), 
         "streamId": working_stream.get("id"),
         "qualityList": list(set([st.get("quality") for st in streams if st.get("quality")])),
         "episode": episode,
-        "season": season
+        "season": season,
+        "is_vip": 1
     }
 
-    return {
-        "url": working_stream.get("url"),
-        "quality": working_stream.get("quality") or quality or "Auto",
-        "cookie": working_cookie,
-        "headers": {"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": working_cookie or ""},
-        "subtitles": subtitles_source,
-        "isHls": working_stream.get("url", "").lower().endswith(".m3u8") or ".m3u8" in working_stream.get("url", "").lower(),
-        "streamId": working_stream.get("id"),
-        "qualityList": list(set([st.get("quality") for st in streams if st.get("quality")])),
-        "duration": total_duration
+# High-Speed Video Stream Proxy (Bypasses Browser CORS/403)
+@app.get("/stream-proxy")
+async def stream_proxy(request: Request, u: str, c: Optional[str] = ""):
+    req_hdrs = {
+        "User-Agent": "ExoPlayerLib/2.18.7",
+        "Cookie": c or ""
     }
+    if "range" in request.headers:
+        req_hdrs["Range"] = request.headers["range"]
 
-import os
+    client = httpx.AsyncClient(verify=False)
+    req = client.build_request("GET", u, headers=req_hdrs)
+    r = await client.send(req, stream=True)
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+    }
+    if "content-range" in r.headers:
+        headers["Content-Range"] = r.headers["content-range"]
+    if "content-length" in r.headers:
+        headers["Content-Length"] = r.headers["content-length"]
+    if "content-type" in r.headers:
+        headers["Content-Type"] = r.headers["content-type"]
+
+    return StreamingResponse(
+        r.aiter_bytes(chunk_size=1024 * 512),
+        status_code=r.status_code,
+        headers=headers,
+        background=client.aclose
+    )
 
 @app.get("/download/{subject_id}")
 async def proxy_download(
@@ -1271,15 +989,11 @@ async def proxy_download(
     session_id: Optional[str] = Cookie(None)
 ):
     s = get_session(session_id)
-    
-    # PRIORITY 1: Carrier 301 (Legacy Mirror) specifically for raw MP4s
-    logger.info(f"Targeting Carrier 301 Raw Mirrors for {subject_id}...")
     c_res = s["client"].request('POST', '/index/video/v_detail', data={'subjectId': subject_id, 'carrier': '301', 'quality': quality})
     data = c_res.get("data")
     if not isinstance(data, dict): data = {}
     streams = data.get("streamList") or data.get("streams") or []
     
-    # PRIORITY 2: Mobile Protocol (DASH/HLS) if MP4 is missing
     if not streams:
         res = s["stream"].get_play_info(subject_id, season=season, episode=episode)
         data = res.get("data", {})
@@ -1301,9 +1015,7 @@ async def proxy_download(
     
     clean_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
     
-    # CASE 1: Native MP4 stream (Fully seekable via HTTPX byte ranges)
     if ".mp4" in url.lower():
-        import httpx
         req_hdrs = {"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}
         range_header = request.headers.get("Range")
         if range_header: req_hdrs["Range"] = range_header
@@ -1331,11 +1043,7 @@ async def proxy_download(
             background=httpx.AsyncClient().aclose
         )
         
-    # CASE 2: DASH (.mpd) or HLS (.m3u8) needs FFMPEG demuxing
-    # We pipe as MPEG-TS (.ts) because it is inherently seekable without needing a faststart moov atom!
-    import subprocess
     filename = f"{clean_title}_S{season}_E{episode}.ts"
-    
     def iter_ffmpeg():
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -1359,13 +1067,12 @@ async def proxy_download(
             "Content-Disposition": f"attachment; filename=\"{filename}\""
         }
     )
+
 @app.get("/subtitles/{subject_id}")
 def get_subtitles(subject_id: str, se: int = 1, ep: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         hdrs = {"User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)", "X-M-Version": "11.7.0"}
-        
-        # Resolve actual resourceId for content mapping parity
         resource_id = subject_id
         try:
             det_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id}, headers=hdrs)
@@ -1374,7 +1081,6 @@ def get_subtitles(subject_id: str, se: int = 1, ep: int = 1, session_id: Optiona
                 resource_id = detectors[0].get('resourceId') or subject_id
         except: pass
 
-        # Fetch using high-parity external captions endpoint
         res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get-ext-captions', 
                                     params={'resourceId': resource_id, 'subjectId': subject_id, 'episode': ep}, 
                                     headers=hdrs)
@@ -1385,38 +1091,32 @@ def get_subtitles(subject_id: str, se: int = 1, ep: int = 1, session_id: Optiona
     except:
         return {"code": 0, "data": {"list": []}}
 
-# --- NEW: Cloud Sync & Advanced Subtitles ---
-
 @app.get("/history/position")
 def get_history_position(subject_id: str, resource_id: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/resource-position', params={'subjectId': subject_id, 'resourceId': resource_id})
-    return res
+    return s["client"].request('GET', '/wefeed-mobile-bff/subject-api/resource-position', params={'subjectId': subject_id, 'resourceId': resource_id})
 
 @app.post("/history/position")
 def save_history_position(subject_id: str, resource_id: str, position: int, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    res = s["client"].request('POST', '/wefeed-mobile-bff/subject-api/resource-position', data={'subjectId': subject_id, 'resourceId': resource_id, 'position': position})
-    return res
+    return s["client"].request('POST', '/wefeed-mobile-bff/subject-api/resource-position', data={'subjectId': subject_id, 'resourceId': resource_id, 'position': position})
 
 @app.post("/history/seen")
 def mark_have_seen(subject_id: str = None, progress: int = 0, total: int = 0, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     if not subject_id: return {"code": -1, "msg": "Missing ID"}
-    res = s["user"].report_history(subject_id, progress, total)
-    return res
+    return s["user"].report_history(subject_id, progress, total)
+
 @app.post("/analytics/operation")
 def track_operation(action: str, target: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
-    res = s["client"].request('POST', '/wefeed-mobile-bff/statistics/user-operation', data={'action': action, 'target': target})
-    return res
+    return s["client"].request('POST', '/wefeed-mobile-bff/statistics/user-operation', data={'action': action, 'target': target})
 
 @app.get("/subtitles/search")
 def subtitle_search(query: str, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         hdrs = {"User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)", "X-M-Version": "11.7.0"}
-        # Parameter 'q' is mandatory for v11.7.0 BFF search
         res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/subtitle-search', params={'q': query}, headers=hdrs)
         data = res.get("data", {})
         if not isinstance(data, dict): data = {}
@@ -1424,18 +1124,14 @@ def subtitle_search(query: str, session_id: Optional[str] = Cookie(None)):
         return {"code": 0, "data": {"list": ls}}
     except: return {"code": 0, "data": {"list": []}}
 
-
 @app.get("/history")
 def get_history(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     h = load_local_history()
-    
-    # Merge both guest/default history and user-specific history
     default_history = h.get("default", [])
     user_specific = h.get(session_id, []) if session_id else []
     blacklist = set(h.get("blacklist", []))
     
-    # Combine uniquely by subjectId
     combined_history_dict = {str(x.get("subjectId") or x.get("id")): x for x in default_history + user_specific}
     user_history = list(combined_history_dict.values())
     
@@ -1449,25 +1145,17 @@ def get_history(page: int = 1, session_id: Optional[str] = Cookie(None)):
             seen_ids = set(combined_history_dict.keys())
             for c in cloud_list:
                 sid_str = str(c.get("subjectId"))
-                # CRITICAL FIX: Only add from cloud if NOT in our local blacklist
                 if sid_str not in seen_ids and sid_str not in blacklist:
                     mapped = map_item(c)
                     mapped["seeTime"] = c.get("seeTime") or c.get("updateTime") or c.get("progress") or 0
                     mapped["subjectId"] = c.get("subjectId")
                     mapped["id"] = c.get("subjectId")
                     user_history.append(mapped)
-        except Exception as e:
-            pass
+        except: pass
         
-    user_history = [x for x in user_history if x.get("subjectId") and str(x.get("subjectId")) != "None"]
-    # AND filter out anything in blacklist again to be 100% sure
-    user_history = [x for x in user_history if str(x.get("subjectId")) not in blacklist]
-    
-    # Sort history by seeTime/updateTime descending
+    user_history = [x for x in user_history if x.get("subjectId") and str(x.get("subjectId")) != "None" and str(x.get("subjectId")) not in blacklist]
     user_history.sort(key=lambda x: int(x.get("seeTime", 0) or 0), reverse=True)
-    
     return {"code": 0, "data": {"list": user_history}}
-
 
 @app.get("/watchlist")
 def get_watchlist(page: int = 1, session_id: Optional[str] = Cookie(None)):
@@ -1490,7 +1178,6 @@ def delete_history_item(subject_id: str, session_id: Optional[str] = Cookie(None
         raise HTTPException(status_code=401, detail="Please Sign In to manage your history.")
     res = s["user"].report_history(subject_id, 0, 0, status=0) 
     return {"status": "success", "raw": res}
-
 
 @app.post("/watchlist/toggle")
 def toggle_watchlist(subject_id: str, active: bool, subject_type: int = 1, session_id: Optional[str] = Cookie(None)):
@@ -1515,218 +1202,8 @@ def report_progress(req: ProgressReport, session_id: Optional[str] = Cookie(None
     return s["user"].report_history(req.subject_id, req.progress_ms, req.total_ms, req.status)
 
 @app.post("/launch-player")
-def launch_player(player: str, url: str, cookie: Optional[str] = None, subject_id: Optional[str] = None, resource_id: Optional[str] = None, season: Optional[int] = None, episode: Optional[int] = None, title: Optional[str] = None, cover: Optional[str] = None, start_time: int = 0, subtitle_url: Optional[str] = None, duration: int = 0, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    # Record History!
-    if subject_id:
-        if not s["auth"].is_guest_mode:
-            try:
-                s["client"].request('POST', '/wefeed-mobile-bff/subject-api/have-seen', data={'subjectId': subject_id})
-            except: pass
-            try:
-                # Report progress starting point to continue watching
-                s["user"].report_history(subject_id, int(start_time) * 1000, 6000000, status=1)
-            except Exception as e:
-                print("History sync failed:", e)
-
-    import subprocess
-    
-    if (not url or "bridge" in url or "compat" in url or "proxy" in url) and subject_id:
-        try:
-            logger.info(f"Resolving RAW stream for native launch: {subject_id} S{season}E{episode} (Resource: {resource_id})")
-            stream_info = get_stream(subject_id, season=season or 1, episode=episode or 1, resource_id=resource_id, session_id=session_id)
-            url = stream_info.get("url")
-            cookie = stream_info.get("cookie")
-            duration = stream_info.get("duration", duration)
-            if not subtitle_url:
-                subtitle_url = stream_info.get("subtitle_url")
-            if url: logger.info(f"SUCCESS: Resolved {url[:60]}...")
-        except Exception as e:
-            logger.error(f"Native Resolution failed: {e}")
-
-    if not url:
-        return {"status": "error", "message": "Empty URL"}
-
-    # ENSURE COOKIE FORMAT is correct for MPV (signCookie=...)
-    if cookie:
-        cookie = cookie.strip().rstrip(';')
-        if "signCookie=" not in cookie:
-            # If it already looks like a CloudFront triple, don't wrap it in signCookie
-            if "CloudFront-Policy" in cookie:
-                pass 
-            else:
-                cookie = f"signCookie={cookie}"
-    else:
-        # FAILOVER: If cookie is empty, try session first
-        cookie = s["client"].session.cookies.get("signCookie") or ""
-        # Only use auth token fallback for regional titles
-        if not cookie and ("hakunaymatata" in url or "hindi" in (title or "").lower()):
-            cookie = s["auth"].token or ""
-            # LAST RESORT: Generate a dummy guest signature if still empty
-            if not cookie:
-                import time
-                cookie = f"guest_{int(time.time())}_{subject_id}"
-                logger.info("Using Generated Guest Signature")
-        
-        if cookie and "signCookie=" not in cookie:
-            cookie = f"signCookie={cookie}"
-    
-    # SECURITY: If URL already has a 'sign=' parameter, DO NOT inject signCookie 
-    # This prevents authentication collision on BCDN mirrors
-    if "sign=" in url:
-        logger.info("SIGN PARAMETER DETECTED IN URL: Suppressing external cookie injection.")
-        cookie = None
-
-    # HIGH PARITY HEADERS matching latest app behavior
-    ua = "ExoPlayerLib/2.19.1"
-    
-    # Referer varies by CDN
-    if "sacdn2.hakunaymatata.com" in url:
-        referer = "https://api6.aoneroom.com/" # REQUIRED FOR SACDN2
-    elif "hakunaymatata.com" in url:
-        referer = "https://www.movieboxpro.app/" # PROVEN REFERER FOR HAKUNA
-    else:
-        referer = "https://api6.aoneroom.com/"
-    
-    if player.lower() == "mpv":
-        cmd = ["mpv", f"--user-agent={ua}", f"--referrer={referer}", "--cache=yes"]
-        # Regional titles sometimes need ytdl disabled, but standard content needs it enabled
-        if "hakunaymatata.com" in url:
-            cmd.append("--ytdl=no")
-        if title: cmd.append(f'--force-media-title={title}')
-        if duration > 0: cmd.append(f"--length={duration}")
-        if cookie:
-            cmd.append(f"--http-header-fields=Cookie: {cookie}")
-            # For DASH (.mpd), ensure the demuxer layer also has the headers
-            if ".mpd" in url:
-                cmd.append(f"--demuxer-lavf-o=headers=Cookie: {cookie}")
-        if start_time > 0: cmd.append(f"--start={start_time}")
-        if subtitle_url: cmd.append(f'--sub-file={subtitle_url}')
-        cmd.append(url)
-    else:
-        cmd = ["vlc", f"--http-user-agent={ua}", f"--http-referrer={referer}", "--network-caching=5000"]
-        if cookie: cmd.append(f':http-header-fields=Cookie: {cookie}')
-        if start_time > 0: cmd.append(f"--start-time={start_time}")
-        if subtitle_url: cmd.append(f'--sub-file={subtitle_url}')
-        cmd.append(url)
-    
-    # WINDOWS SHELL QUOTING FIX: Rebuild command string with proper quotes for the shell
-    def win_quote(s):
-        if ' ' in s or '&' in s or '?' in s or '=' in s:
-            return f'"{s}"'
-        return s
-    
-    cmd_str = ' '.join(map(win_quote, cmd))
-    logger.info(f"EXEC CMD (WIN): {cmd_str}")
-    
-    # On Windows, we use shell=True and CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(cmd_str, shell=True, creationflags=0x00000200)
-    return {"status": "success", "url": url}
-
-@app.get("/post/count/{subject_id}")
-def get_post_count(subject_id: str, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["client"].request("GET", "/wefeed-mobile-bff/post/count/subject", params={"subjectId": subject_id})
-        count = res.get("data", {}).get("count") or "0"
-        return {"code": 0, "count": count}
-    except:
-        return {"code": 0, "count": "0"}
-
-@app.get("/groups/trending")
-def get_trending_groups(session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["client"].request("POST", "/wefeed-mobile-bff/group/list/trending-entrance", data={})
-        data = res.get("data", {})
-        items = data.get("items") or []
-        return {"code": 0, "data": items}
-    except:
-        return {"code": 0, "data": []}
-
-@app.post("/post/like")
-def like_post(post_id: str, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        res = s["client"].request("POST", "/wefeed-mobile-bff/interactive/post/like", data={"postId": post_id})
-        return res
-    except Exception as e:
-        return {"code": 1, "msg": str(e)}
-
-@app.post("/post/create")
-def create_post(subject_id: str, content: str, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        # /post/create logic from Smali
-        data = {
-            "subjectId": subject_id,
-            "content": content,
-            "type": "1" # Public post
-        }
-        res = s["client"].request("POST", "/wefeed-mobile-bff/post/create", data=data)
-        return res
-    except Exception as e:
-        return {"code": 1, "msg": str(e)}
-
-@app.get("/groups/interactive")
-def get_interactive_posts(session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        # Pull from public interactive ranking feed
-        res = s["client"].request("POST", "/wefeed-mobile-bff/interactive/post/list", 
-                                 data={"page": 1, "pageSize": 20})
-        return res
-    except Exception as e:
-        return {"code": 1, "msg": str(e)}
-
-@app.get("/post/list/{subject_id}")
-def get_subject_posts(subject_id: str, page: int = 1, session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    try:
-        # subject-specific post list
-        res = s["client"].request("POST", "/wefeed-mobile-bff/post/list/subject", 
-                                 data={"subjectId": subject_id, "page": page, "pageSize": 10})
-        return res
-    except Exception as e:
-        return {"code": 1, "msg": str(e)}
-
-@app.get("/debug_history")
-def debug_history(session_id: Optional[str] = Cookie(None)):
-    s = get_session(session_id)
-    results = {}
-    for i in range(1, 6):
-        try:
-            res = s["client"].request(
-                "GET",
-                "/wefeed-mobile-bff/subject-api/see-list-v2",
-                params={"page": "1", "pageSize": "10", "seeType": str(i)}
-            )
-            data = res.get("data", {})
-            if not isinstance(data, dict): data = {}
-            lst = data.get("list") or data.get("items") or res.get("list") or []
-            results[f"seeType_{i}_count"] = len(lst)
-            if len(lst) > 0:
-                results[f"seeType_{i}_sample_keys"] = list(lst[0].keys())
-        except Exception as e:
-            results[f"seeType_{i}_error"] = str(e)
-            
-    try:
-        results["tab_record"] = s["client"].request("GET", "/wefeed-mobile-bff/tab/play-record")
-    except: pass
-    return results
-
-# DIRECT NATIVE PLAYBACK ONLY (PROXIES REMOVED)
-
-@app.get("/sub-proxy")
-async def subtitle_proxy(u: str):
-    """Proxies external subtitles to bypass CORS blocking."""
-    async with httpx.AsyncClient(verify=False) as client:
-        res = await client.get(u, headers={"User-Agent": "ExoPlayerLib/2.18.7"}, follow_redirects=True)
-        return Response(content=res.content, media_type="text/vtt", headers={"Access-Control-Allow-Origin": "*"})
-
-@app.post("/launch-player")
 def launch_player(
-    player: str = Query(...),
+    player: str = Query("mpv"),
     url: str = Query(...),
     cookie: Optional[str] = Query(None),
     subject_id: Optional[str] = Query(None),
@@ -1767,24 +1244,76 @@ def launch_player(
             cmd.extend(["--sub-file", subtitle_url])
         cmd.extend(["--http-user-agent", "ExoPlayerLib/2.18.7"])
     else:
-        raise HTTPException(status_code=400, detail=f"Unsupported player: {player}")
+        return {"status": "error", "message": f"Unsupported player: {player}"}
         
     try:
         creation_flags = 0
         if os.name == 'nt':
             creation_flags = 0x00000008 | 0x00000200
-        logger.info(f"Executing: {' '.join(cmd)}")
         subprocess.Popen(cmd, creationflags=creation_flags, close_fds=True)
         return {"status": "success", "message": f"Launched {player}"}
     except Exception as e:
-        logger.error(f"Failed to launch player: {e}")
-        try:
-            subprocess.Popen(cmd, shell=True)
-            return {"status": "success", "message": f"Launched {player} (fallback shell)"}
-        except Exception as e2:
-            logger.error(f"Fallback launch failed: {e2}")
-            raise HTTPException(status_code=500, detail=f"Could not launch {player}: {str(e2)}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/post/count/{subject_id}")
+def get_post_count(subject_id: str, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["client"].request("GET", "/wefeed-mobile-bff/post/count/subject", params={"subjectId": subject_id})
+        count = res.get("data", {}).get("count") or "0"
+        return {"code": 0, "count": count}
+    except:
+        return {"code": 0, "count": "0"}
+
+@app.get("/groups/trending")
+def get_trending_groups(session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        res = s["client"].request("POST", "/wefeed-mobile-bff/group/list/trending-entrance", data={})
+        data = res.get("data", {})
+        items = data.get("items") or []
+        return {"code": 0, "data": items}
+    except:
+        return {"code": 0, "data": []}
+
+@app.post("/post/like")
+def like_post(post_id: str, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        return s["client"].request("POST", "/wefeed-mobile-bff/interactive/post/like", data={"postId": post_id})
+    except Exception as e:
+        return {"code": 1, "msg": str(e)}
+
+@app.post("/post/create")
+def create_post(subject_id: str, content: str, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        data = {"subjectId": subject_id, "content": content, "type": "1"}
+        return s["client"].request("POST", "/wefeed-mobile-bff/post/create", data=data)
+    except Exception as e:
+        return {"code": 1, "msg": str(e)}
+
+@app.get("/groups/interactive")
+def get_interactive_posts(session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        return s["client"].request("POST", "/wefeed-mobile-bff/interactive/post/list", data={"page": 1, "pageSize": 20})
+    except Exception as e:
+        return {"code": 1, "msg": str(e)}
+
+@app.get("/post/list/{subject_id}")
+def get_subject_posts(subject_id: str, page: int = 1, session_id: Optional[str] = Cookie(None)):
+    s = get_session(session_id)
+    try:
+        return s["client"].request("POST", "/wefeed-mobile-bff/post/list/subject", data={"subjectId": subject_id, "page": page, "pageSize": 10})
+    except Exception as e:
+        return {"code": 1, "msg": str(e)}
+
+@app.get("/sub-proxy")
+async def subtitle_proxy(u: str):
+    async with httpx.AsyncClient(verify=False) as client:
+        res = await client.get(u, headers={"User-Agent": "ExoPlayerLib/2.18.7"}, follow_redirects=True)
+        return Response(content=res.content, media_type="text/vtt", headers={"Access-Control-Allow-Origin": "*"})
 
 if __name__ == "__main__":
-    # DISABLE RELOAD: Prevents Windows-specific crash loops during active streaming/editing
     uvicorn.run("moviebox_api_server:app", host="0.0.0.0", port=8000, reload=False)
