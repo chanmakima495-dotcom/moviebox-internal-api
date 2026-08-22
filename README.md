@@ -1,4 +1,4 @@
-# 🎬 MovieBox Pro — Unofficial Streaming Dashboard
+# 🎬 MovieBox Pro — Unofficial Streaming  Dashboard
 
 A high-performance, browser-native streaming dashboard that reverse-engineers the MovieBox/AOneRoom mobile app API and exposes it through a local web dashboard. Supports H.264 & H.265 content, subtitles, watchlist, history, and external player integration.
 
