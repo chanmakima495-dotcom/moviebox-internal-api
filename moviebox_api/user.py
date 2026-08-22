@@ -5,12 +5,23 @@ class MovieBoxUser:
     def __init__(self, client: MovieBoxClient):
         self.client = client
 
-    def get_profile(self) -> Dict:
-        """Fetches comprehensive user profile."""
-        return self.client.request(
-            "GET", 
+        def get_profile(self) -> Dict:
+        """Fetches comprehensive user profile with VIP status injected."""
+        res = self.client.request(
+            "GET",
             "/wefeed-mobile-bff/user-api/profile/v2"
         )
+        if isinstance(res, dict):
+            if "data" in res and isinstance(res["data"], dict):
+                res["data"]["is_vip"] = 1
+                res["data"]["vip"] = 1
+                res["data"]["user_type"] = "vip"
+                res["data"]["vip_expire_date"] = "2099-12-31"
+            res["is_vip"] = 1
+            res["vip"] = 1
+            res["user_type"] = "vip"
+        return res
+
 
     def get_history(self, page: int = 1, per_page: int = 20) -> Dict:
         """
