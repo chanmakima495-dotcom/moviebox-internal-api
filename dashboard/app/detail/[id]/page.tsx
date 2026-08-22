@@ -27,7 +27,13 @@ function ArtPlayer({ option, getInstance, className }: any) {
         m3u8: function (video: HTMLVideoElement, url: string, artInstance: any) {
           if (Hls.isSupported()) {
             if (artInstance.hls) artInstance.hls.destroy();
-            const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+            const hls = new Hls({
+              enableWorker: true,
+              lowLatencyMode: true,
+              xhrSetup: function (xhr: any) {
+                xhr.withCredentials = false;
+              }
+            });
             hls.loadSource(url);
             hls.attachMedia(video);
             artInstance.hls = hls;
