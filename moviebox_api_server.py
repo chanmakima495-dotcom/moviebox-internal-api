@@ -894,8 +894,9 @@ def get_stream(
 @app.get("/stream-proxy")
 async def stream_proxy(request: Request, u: str, c: Optional[str] = ""):
     raw_u = unquote(u)
-    
-    # Referer spoofing for multi-region CDNs
+    cookie_val = unquote(c) if c else ""
+
+    # CDN Referer spoofing
     if "sacdn2.hakunaymatata.com" in raw_u:
         referer = "https://api6.aoneroom.com/"
     elif "hakunaymatata.com" in raw_u:
@@ -904,58 +905,109 @@ async def stream_proxy(request: Request, u: str, c: Optional[str] = ""):
         referer = "https://www.moviebox.ph/"
 
     req_hdrs = {
-        "User-Agent": "ExoPlayerLib/2.19.1",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
         "Referer": referer,
-        "Cookie": c or ""
+        "Origin": referer.rstrip("/"),
     }
-    
-    # Rewrite M3U8 Master and Chunk Playlists
+    if cookie_val:
+        req_hdrs["Cookie"] = cookie_val
+
+    # --- HLS M3U8 rewrite ---
     if ".m3u8" in raw_u.lower():
         try:
-            async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
-                resp = await client.get(raw_u, headers=req_hdrs, follow_redirects=True)
-                if resp.status_code == 200:
-                    lines = resp.text.splitlines()
-                    rewritten = []
-                    for line in lines:
-                        line_str = line.strip()
-                        if line_str and not line_str.startswith("#"):
-                            full_chunk_url = urljoin(raw_u, line_str)
-                            chunk_proxy = f"/stream-proxy?u={quote(full_chunk_url)}&c={quote(c or '')}"
-                            rewritten.append(chunk_proxy)
-                        else:
-                            rewritten.append(line_str)
-                    
-                    return PlainTextResponse(
-                        "\n".join(rewritten),
-                        media_type="application/vnd.apple.mpegurl",
-                        headers={"Access-Control-Allow-Origin": "*"}
+            async with httpx.AsyncClient(
+                verify=False, timeout=20.0, follow_redirects=True
+            ) as client:
+                resp = await client.get(raw_u, headers=req_hdrs)
+                if resp.status_code != 200:
+                    raise HTTPException(
+                        status_code=resp.status_code,
+                        detail="CDN returned error for M3U8"
                     )
+
+                content_type = resp.headers.get("content-type", "")
+                text = resp.text
+
+                # Base URL — শেষ / পর্যন্ত
+                base_url = raw_u.rsplit("/", 1)[0] + "/"
+
+                lines = text.splitlines()
+                rewritten = []
+
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        rewritten.append("")
+                        continue
+
+                    if stripped.startswith("#"):
+                        # URI= এর ভেতরের link গুলো rewrite করো
+                        def replace_uri(match):
+                            uri = match.group(1)
+                            if not uri.startswith("http"):
+                                uri = urljoin(base_url, uri)
+                            proxied = f"/stream-proxy?u={quote(uri, safe='')}&c={quote(cookie_val, safe='')}"
+                            return f'URI="{proxied}"'
+
+                        rewritten_line = re.sub(r'URI="([^"]+)"', replace_uri, stripped)
+                        rewritten.append(rewritten_line)
+                    else:
+                        # Chunk / segment URL
+                        if not stripped.startswith("http"):
+                            full_url = urljoin(base_url, stripped)
+                        else:
+                            full_url = stripped
+                        
+                        proxied_chunk = f"/stream-proxy?u={quote(full_url, safe='')}&c={quote(cookie_val, safe='')}"
+                        rewritten.append(proxied_chunk)
+
+                return PlainTextResponse(
+                    "\n".join(rewritten),
+                    media_type="application/vnd.apple.mpegurl",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Headers": "*",
+                        "Cache-Control": "no-cache",
+                    }
+                )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"M3U8 Proxy Error: {e}")
+            logger.error(f"M3U8 proxy error: {e}")
+            raise HTTPException(status_code=502, detail=f"M3U8 fetch failed: {e}")
 
-    # Byte Range Support for Seeking (TS Chunks / MP4 Direct)
-    if "range" in request.headers:
-        req_hdrs["Range"] = request.headers["range"]
+    # --- MP4 / TS chunk proxy with Range support ---
+    range_header = request.headers.get("range")
+    if range_header:
+        req_hdrs["Range"] = range_header
 
-    client = httpx.AsyncClient(verify=False, timeout=30.0)
-    req = client.build_request("GET", raw_u, headers=req_hdrs)
-    r = await client.send(req, stream=True)
+    try:
+        client = httpx.AsyncClient(verify=False, timeout=60.0, follow_redirects=True)
+        req = client.build_request("GET", raw_u, headers=req_hdrs)
+        r = await client.send(req, stream=True)
 
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "*",
-    }
-    for h in ["content-range", "content-length", "content-type"]:
-        if h in r.headers: headers[h.title()] = r.headers[h]
+        resp_headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
 
-    return StreamingResponse(
-        r.aiter_bytes(chunk_size=1024 * 512),
-        status_code=r.status_code,
-        headers=headers,
-        background=client.aclose
-    )
+        # Content-* headers forward করো
+        for h in ["content-type", "content-length", "content-range", "accept-ranges"]:
+            if h in r.headers:
+                resp_headers[h.title()] = r.headers[h]
+
+        if "accept-ranges" not in r.headers:
+            resp_headers["Accept-Ranges"] = "bytes"
+
+        return StreamingResponse(
+            r.aiter_bytes(chunk_size=512 * 1024),
+            status_code=r.status_code,
+            headers=resp_headers,
+            background=client.aclose
+        )
+    except Exception as e:
+        logger.error(f"Proxy stream error: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/download/{subject_id}")
 async def proxy_download(
