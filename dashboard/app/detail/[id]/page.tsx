@@ -168,13 +168,27 @@ export default function MovieDetail() {
      }
   };
 
-  const handleWatchlist = async () => {
+    const handleWatchlist = async () => {
     if (!movie) return;
     try {
-      await movieApi.toggleWatchlist(id as string, !watchlistActive, movie.subjectType || 1);
-      setWatchlistActive(!watchlistActive);
+      const newActive = !watchlistActive;
+      setWatchlistActive(newActive);
+      
+      // Save to LocalStorage for instant UI feedback
+      if (typeof window !== 'undefined') {
+        let wl = JSON.parse(localStorage.getItem('user_watchlist') || '[]');
+        if (newActive) {
+          wl.push(movie);
+        } else {
+          wl = wl.filter((x: any) => String(x.subjectId || x.id) !== String(id));
+        }
+        localStorage.setItem('user_watchlist', JSON.stringify(wl));
+      }
+
+      await movieApi.toggleWatchlist(id as string, newActive, movie.subjectType || 1);
     } catch (e) {}
   };
+
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen bg-black">
