@@ -6,7 +6,7 @@ import { movieApi } from '../../../lib/api';
 import { 
   Play, Plus, Star, ChevronLeft, 
   Clock, Calendar, Languages, Film, X, 
-  Settings, ChevronDown, Loader2
+  User, Tv, ChevronDown, Loader2, Settings
 } from 'lucide-react';
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
@@ -41,6 +41,7 @@ export default function MovieDetail() {
   const [loading, setLoading] = useState(true);
   const [watchlistActive, setWatchlistActive] = useState(false);
   
+  // Streaming & Player States
   const [isPlaying, setIsPlaying] = useState(false);
   const [seasons, setSeasons] = useState<any[]>([]);
   const [selectedSeasonIdx, setSelectedSeasonIdx] = useState(0);
@@ -160,8 +161,10 @@ export default function MovieDetail() {
   return (
     <div className="relative min-h-screen bg-[#07090e] text-white overflow-x-hidden pb-20 font-sans">
       
+      {/* If Watch Now is clicked, show Native Player UI */}
       {isPlaying ? (
         <div className="flex flex-col min-h-screen">
+          {/* Top Bar */}
           <div className="w-full flex items-center justify-between px-4 py-3 bg-[#07090e] border-b border-zinc-900 sticky top-0 z-50">
             <button 
               onClick={() => setIsPlaying(false)} 
@@ -177,6 +180,7 @@ export default function MovieDetail() {
             </button>
           </div>
 
+          {/* 16:9 Video Player */}
           <div className="w-full max-w-4xl mx-auto aspect-video bg-black relative shadow-2xl border-b border-zinc-900">
              {streamLoading && (
                 <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
@@ -228,6 +232,7 @@ export default function MovieDetail() {
              )}
           </div>
 
+          {/* Season & Episodes Workspace */}
           <div className="w-full max-w-4xl mx-auto px-4 py-6 flex-1">
              <h4 className="text-xs font-bold text-zinc-400 tracking-wider mb-4 uppercase">Resource / Season</h4>
              <div className="flex flex-wrap items-center gap-3 mb-6 relative">
@@ -264,6 +269,7 @@ export default function MovieDetail() {
                 )}
              </div>
 
+             {/* Episode Grid */}
              {episodes.length > 0 ? (
                 <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
                    {episodes.map((ep: any, idx: number) => {
@@ -296,6 +302,7 @@ export default function MovieDetail() {
           </div>
         </div>
       ) : (
+        /* Default Details Page */
         <>
           <div className="absolute top-0 left-0 w-full h-[70vh] overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-t from-[#07090e] via-black/40 to-transparent z-10" />
@@ -380,6 +387,7 @@ export default function MovieDetail() {
         </>
       )}
 
+      {/* Language Modal */}
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
            <div className="w-full max-w-md bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6">
