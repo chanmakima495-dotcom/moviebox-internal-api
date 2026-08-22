@@ -1,12 +1,12 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'https://movieboxapi-xp54.onrender.com';
+const API_BASE_URL = '/api';
 
 // Create axios instance with credentials enabled for session cookies
 const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
-});
+}
 
 export interface MovieItem {
   subjectId: string;
