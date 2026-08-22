@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { movieApi } from '../../../lib/api';
+import { movieApi, MovieItem } from '../../../lib/api';
 import { 
   Play, Plus, Star, ChevronLeft, 
   Clock, Calendar, Languages, Film, X, 
@@ -61,18 +61,17 @@ export default function MovieDetail() {
       const res = await movieApi.getDetail(id as string);
       const data = res?.data || res;
       setMovie(data);
-
+      
       if (data?.subjectType === 2 || data?.isCollection) {
-        const epRes = await movieApi.getEpisodes(id as string);
-        const list = epRes?.data?.seasons || epRes?.data || [];
-        setSeasons(list);
-        if (list.length > 0) {
-          setEpisodes(list[0]?.episodes || []);
-        }
+         const epRes = await movieApi.getEpisodes(id as string);
+         const list = epRes?.data?.seasons || epRes?.data || [];
+         setSeasons(list);
+         if (list.length > 0) {
+            setEpisodes(list[0]?.episodes || []);
+         }
       }
       setLoading(false);
     } catch (e) {
-      console.error(e);
       setLoading(false);
     }
   };
@@ -88,12 +87,14 @@ export default function MovieDetail() {
         const targetId = selectedLanguage?.subjectId || id;
         const resourceId = selectedLanguage?.id;
         
+        console.log("Resolving Stream for Web Player:", targetId, "S", seasonNum, "E", epNum);
+        
         const streamData = await movieApi.getStream(
-           targetId as string, 
-           seasonNum || 1, 
-           epNum as any || 1, 
-           qual, 
-           resourceId || undefined
+          targetId as string, 
+          seasonNum || 1, 
+          epNum as any || 1, 
+          qual, 
+          resourceId || undefined
         );
         
         const stream = streamData?.data || streamData;
@@ -102,12 +103,12 @@ export default function MovieDetail() {
            return;
         }
 
-        // Relative bridge path fix to absolute Render URL
-        let finalUrl = stream.url;
-        if (finalUrl && !finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-           finalUrl = `https://movieboxapi-xp54.onrender.com${finalUrl.startsWith('/') ? '' : '/'}${finalUrl}`;
+        // Relative proxy URL to full Render URL fix
+        let playUrl = stream.url;
+        if (playUrl && !playUrl.startsWith('http://') && !playUrl.startsWith('https://')) {
+            playUrl = `https://movieboxapi-xp54.onrender.com${playUrl.startsWith('/') ? '' : '/'}${playUrl}`;
         }
-        stream.url = finalUrl;
+        stream.url = playUrl;
 
         setStreamInfo(stream);
      } catch (e) {
@@ -181,7 +182,7 @@ export default function MovieDetail() {
                     {movie.quality}
                   </span>
                 )}
-                <span className="text-sm font-bold text-zinc-400">{movie.releaseTime?.substring(0, 4)}</span>
+                <span className="text-sm font-bold text-zinc-400">{movie.releaseTime?.substring(0, 4) || '2024'}</span>
              </div>
 
              <h1 className="text-5xl md:text-7xl font-black italic uppercase tracking-tighter mb-6 leading-none text-white drop-shadow-2xl">
@@ -232,10 +233,10 @@ export default function MovieDetail() {
 
              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[
-                   { icon: Clock, label: 'Duration', value: movie.duration || 'N/A' },
-                   { icon: Calendar, label: 'Released', value: movie.releaseTime || 'N/A' },
+                   { icon: Clock, label: 'Duration', value: movie.duration || movie.runtime || '120m' },
+                   { icon: Calendar, label: 'Released', value: movie.releaseTime || '2024' },
                    { icon: Languages, label: 'Language', value: movie.language || 'Multi' },
-                   { icon: Film, label: 'Source', value: movie.source || 'Premium' }
+                   { icon: Film, label: 'Source', value: 'VIP Premium' }
                 ].map((item, i) => (
                    <div key={i} className="p-4 bg-white/5 rounded-2xl border border-white/5 backdrop-blur-md">
                       <item.icon className="w-5 h-5 text-red-500 mb-2" />
@@ -322,81 +323,72 @@ export default function MovieDetail() {
         )}
       </div>
 
-      {/* Fullscreen Video Player Overlay using ArtPlayer */}
+      {/* Modern Responsive Video Player Popup */}
       {streamInfo && (
-         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
-            <div className="absolute top-6 left-6 z-[110]">
+         <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex flex-col justify-center items-center p-3 sm:p-6">
+            <div className="w-full max-w-5xl bg-zinc-950 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl relative flex flex-col">
+              <div className="flex items-center justify-between px-6 py-4 bg-zinc-900/90 border-b border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-600 text-white tracking-widest uppercase">VIP HQ</span>
+                  <h3 className="font-bold text-sm truncate text-white max-w-[200px] sm:max-w-md">{movie?.title}</h3>
+                </div>
                 <button 
                   onClick={() => setStreamInfo(null)}
-                  className="p-3 bg-black/50 hover:bg-black/80 rounded-full border border-white/10 text-white transition-all backdrop-blur-md"
+                  className="p-2 bg-white/5 hover:bg-red-600/20 text-zinc-400 hover:text-red-500 rounded-full transition-colors"
                 >
-                   <ChevronLeft className="w-8 h-8" />
+                  <X className="w-5 h-5" />
                 </button>
-            </div>
+              </div>
 
-            <ArtPlayer
-              getInstance={(art: any) => {
-                artInstance.current = art;
-                
-                art.on('video:durationchange', () => {
-                   if (streamInfo.duration && Math.abs(art.video.duration - streamInfo.duration) > 5) {
-                      Object.defineProperty(art.video, 'duration', {
-                         configurable: true,
-                         get: () => streamInfo.duration
-                      });
-                   }
-                });
-              }}
-              option={{
-                url: streamInfo.url,
-                autoplay: true,
-                autoSize: true,
-                type: streamInfo.url && (streamInfo.url.includes('.mpd') || streamInfo.url.includes('.manifest')) ? 'mpd' : (streamInfo.url?.includes('.m3u8') ? 'm3u8' : 'mp4'),
-                duration: streamInfo.duration || 3600,
-                title: movie.title,
-                poster: movie.poster || movie.cover,
-                volume: 0.7,
-                isLive: false,
-                pip: true,
-                screenshot: true,
-                setting: true,
-                loop: false,
-                flip: true,
-                playbackRate: true,
-                aspectRatio: true,
-                subtitle: {
-                   url: streamInfo.subtitles && streamInfo.subtitles.length > 0 
-                        ? `https://movieboxapi-xp54.onrender.com/sub-proxy?u=${encodeURIComponent(streamInfo.subtitles[0].filePath || streamInfo.subtitles[0].url)}` 
-                        : '',
-                   type: 'vtt',
-                   style: { color: '#fff', fontSize: '24px' },
-                   encoding: 'utf-8'
-                },
-                fullscreen: true,
-                fullscreenWeb: true,
-                subtitleOffset: true,
-                miniProgressBar: true,
-                theme: '#dc2626',
-                moreVideoAttr: {
-                   crossOrigin: 'anonymous',
-                },
-                customType: {
-                  m3u8: function (video: HTMLVideoElement, url: string, art: any) {
-                    if (Hls.isSupported()) {
-                      if (art.hls) art.hls.destroy();
-                      const hls = new Hls();
-                      hls.loadSource(url);
-                      hls.attachMedia(video);
-                      art.hls = hls;
-                      art.on('destroy', () => hls.destroy());
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                      video.src = url;
+              <div className="relative aspect-video w-full bg-black">
+                <ArtPlayer
+                  getInstance={(art: any) => {
+                    artInstance.current = art;
+                  }}
+                  option={{
+                    url: streamInfo.url,
+                    autoplay: true,
+                    theme: '#dc2626',
+                    volume: 0.8,
+                    pip: true,
+                    fullscreen: true,
+                    fullscreenWeb: true,
+                    subtitleOffset: true,
+                    miniProgressBar: true,
+                    moreVideoAttr: {
+                      crossOrigin: 'anonymous',
+                      playsInline: true,
+                    },
+                    subtitle: {
+                      url: streamInfo.subtitles && streamInfo.subtitles.length > 0 
+                            ? `https://movieboxapi-xp54.onrender.com/sub-proxy?u=${encodeURIComponent(streamInfo.subtitles[0].filePath || streamInfo.subtitles[0].url)}` 
+                            : '',
+                      type: 'vtt',
+                      style: { color: '#fff', fontSize: '20px' },
+                      encoding: 'utf-8'
+                    },
+                    customType: {
+                      m3u8: function (video: HTMLVideoElement, url: string, art: any) {
+                        if (Hls.isSupported()) {
+                          if (art.hls) art.hls.destroy();
+                          const hls = new Hls({
+                            enableWorker: true,
+                            lowLatencyMode: true,
+                          });
+                          hls.loadSource(url);
+                          hls.attachMedia(video);
+                          art.hls = hls;
+                          art.on('destroy', () => hls.destroy());
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                          video.src = url;
+                        }
+                      }
                     }
-                  }
-                },
-              }}
-              className="w-full h-full"
-            />
+                  }}
+                  className="w-full h-full"
+                />
+              </div>
+            </div>
          </div>
       )}
 
@@ -404,7 +396,7 @@ export default function MovieDetail() {
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
            <div 
-             className="w-full sm:max-w-md bg-zinc-900/90 sm:rounded-3xl border-t sm:border border-white/10 overflow-hidden animate-in slide-in-from-bottom duration-300 shadow-2xl"
+             className="w-full sm:max-w-md bg-zinc-900/90 sm:rounded-3xl border-t sm:border border-white/10 overflow-hidden shadow-2xl"
              onClick={e => e.stopPropagation()}
            >
               <div className="flex items-center justify-between px-6 py-5 border-b border-white/5">
@@ -415,7 +407,7 @@ export default function MovieDetail() {
                     <X size={24} />
                  </button>
               </div>
-              <div className="p-4 flex flex-col gap-2 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              <div className="p-4 flex flex-col gap-2 max-h-[60vh] overflow-y-auto">
                  <button 
                    onClick={() => { 
                       setSelectedLanguage(null); 
