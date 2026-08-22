@@ -70,14 +70,10 @@ def get_session(session_id: Optional[str] = None):
     logger.info(f"Created new session: {sid}")
     
     try:
-        logger.info(f"Bootstrapping guest credentials for session {sid}...")
         auth.is_logged_in = False
         res = MovieBoxContent(client).get_categories(category_id=1, page=1)
         if auth.token and auth.token != "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjcwNjU5NDg0MTAyMTM4MTYyMzIsInV0cCI6MSwiZXhwIjoxNzkxNzMyMjMzLCJpYXQiOjE3ODM5NTU5MzN9.7iyEzTj4vWAbOF0oXwNnZ0p3Nc1QaO6K9eMiGFyVfGs":
-            logger.info(f"Bootstrap guest token success: {auth.token[:30]}... UID: {auth.user_id}")
             auth.is_logged_in = True
-        else:
-            logger.warning("Bootstrap guest token did not update credentials.")
     except Exception as e:
         logger.error(f"Failed to bootstrap guest session: {e}")
         
@@ -151,7 +147,7 @@ def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
     if isinstance(user_data, dict):
         user_data["is_vip"] = 1
         user_data["vip"] = 1
-        user_data["user_type"] = "vip"
+        user_data["user_type"] = 1
         user_data["vip_expire_date"] = "2099-12-31"
 
     return {
@@ -161,7 +157,7 @@ def get_user_info(response: Response, session_id: Optional[str] = Cookie(None)):
         "session_id": s["id"],
         "is_vip": 1,
         "vip": 1,
-        "user_type": "vip"
+        "user_type": 1
     }
 
 def map_actor(actor: dict):
@@ -324,6 +320,49 @@ def map_item(src: dict, depth: int = 0):
         "deepLink": dlink
     }
 
+def format_tab_sections(items: list):
+    sections = []
+    is_direct_movies = True
+    for row in items:
+        if isinstance(row, dict) and (row.get("list") or row.get("items") or row.get("subjects") or row.get("movieList") or row.get("customData") or row.get("banner")):
+            is_direct_movies = False
+            break
+            
+    if is_direct_movies and items:
+         mapped = [map_item(m) for m in items if m.get("subjectId") or m.get("id")]
+         if mapped: return [{"title": "Content", "items": mapped}]
+
+    for row in items:
+        if not isinstance(row, dict): continue
+        title = row.get("title") or row.get("name") or "Section"
+        
+        inner = []
+        if isinstance(row.get("list"), list) and row.get("list"): inner = row.get("list")
+        elif isinstance(row.get("items"), list) and row.get("items"): inner = row.get("items")
+        elif isinstance(row.get("subjects"), list) and row.get("subjects"): inner = row.get("subjects")
+        elif isinstance(row.get("movieList"), list) and row.get("movieList"): inner = row.get("movieList")
+        elif isinstance(row.get("customData"), dict) and isinstance(row["customData"].get("items"), list) and row["customData"]["items"]:
+            inner = row["customData"]["items"]
+        elif isinstance(row.get("banner"), dict) and isinstance(row["banner"].get("banners"), list) and row["banner"]["banners"]:
+            inner = row["banner"]["banners"]
+            
+        real_movies = []
+        for i in inner:
+            if not isinstance(i, dict): continue
+            if isinstance(i.get("subject"), dict):
+                 real_movies.append(i["subject"])
+            elif i.get("subjectId") or i.get("id"):
+                 real_movies.append(i)
+        
+        if real_movies:
+            mapped = [map_item(m) for m in real_movies]
+            sections.append({
+                "title": title,
+                "type": row.get("subjectType") or row.get("type") or "SUBJECTS_MOVIE",
+                "items": mapped
+            })
+    return sections
+
 @app.get("/home")
 def get_home(page: int = 1, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
@@ -345,7 +384,6 @@ def get_anime(page: int = 1, session_id: Optional[str] = Cookie(None)):
         items = data.get("list") or data.get("items") or data.get("subjects") or []
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
-        logger.error(f"Anime error: {e}")
         return {"code": 1, "data": []}
 
 @app.get("/rankings")
@@ -413,49 +451,6 @@ def get_movies(page: int = 1, session_id: Optional[str] = Cookie(None)):
         return {"code": 0, "data": {"list": format_tab_sections(items)}}
     except Exception as e:
         return {"code": 1, "data": []}
-
-def format_tab_sections(items: list):
-    sections = []
-    is_direct_movies = True
-    for row in items:
-        if isinstance(row, dict) and (row.get("list") or row.get("items") or row.get("subjects") or row.get("movieList") or row.get("customData") or row.get("banner")):
-            is_direct_movies = False
-            break
-            
-    if is_direct_movies and items:
-         mapped = [map_item(m) for m in items if m.get("subjectId") or m.get("id")]
-         if mapped: return [{"title": "Content", "items": mapped}]
-
-    for row in items:
-        if not isinstance(row, dict): continue
-        title = row.get("title") or row.get("name") or "Section"
-        
-        inner = []
-        if isinstance(row.get("list"), list) and row.get("list"): inner = row.get("list")
-        elif isinstance(row.get("items"), list) and row.get("items"): inner = row.get("items")
-        elif isinstance(row.get("subjects"), list) and row.get("subjects"): inner = row.get("subjects")
-        elif isinstance(row.get("movieList"), list) and row.get("movieList"): inner = row.get("movieList")
-        elif isinstance(row.get("customData"), dict) and isinstance(row["customData"].get("items"), list) and row["customData"]["items"]:
-            inner = row["customData"]["items"]
-        elif isinstance(row.get("banner"), dict) and isinstance(row["banner"].get("banners"), list) and row["banner"]["banners"]:
-            inner = row["banner"]["banners"]
-            
-        real_movies = []
-        for i in inner:
-            if not isinstance(i, dict): continue
-            if isinstance(i.get("subject"), dict):
-                 real_movies.append(i["subject"])
-            elif i.get("subjectId") or i.get("id"):
-                 real_movies.append(i)
-        
-        if real_movies:
-            mapped = [map_item(m) for m in real_movies]
-            sections.append({
-                "title": title,
-                "type": row.get("subjectType") or row.get("type") or "SUBJECTS_MOVIE",
-                "items": mapped
-            })
-    return sections
 
 @app.get("/short-tv")
 def get_short_tv(page: int = 1, session_id: Optional[str] = Cookie(None)):
@@ -759,6 +754,7 @@ def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
             mapped_seasons.append({"seasonNumber": num, "episodes": eps})
     return {"code": 0, "data": {"seasons": mapped_seasons}}
 
+# --- HIGH FIDELITY STREAM EXTRACTION WITH PROXY ROUTE ---
 @app.get("/stream/{subject_id}")
 def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Optional[str] = "720p", resource_id: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
@@ -778,160 +774,33 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
         try:
             detectors = subject_detail.get("resourceDetectors") or []
             for det in detectors:
-                if resource_id and str(det.get("resourceId")) != str(resource_id):
-                    continue
-                res_list = det.get("resolutionList") or []
-                for res_item in res_list:
-                    if not is_movie:
-                        item_se = res_item.get("se") or res_item.get("season")
-                        item_ep = res_item.get("ep") or res_item.get("episode")
-                        if item_se is not None and item_ep is not None:
-                            if int(item_se) != int(season) or int(item_ep) != int(episode):
-                                continue
+                if resource_id and str(det.get("resourceId")) != str(resource_id): continue
+                for res_item in det.get("resolutionList") or []:
                     stream_url = res_item.get("resourceLink") or res_item.get("downloadUrl")
                     if stream_url:
                         streams.append({
                             "url": stream_url,
                             "quality": f"{res_item.get('resolution')}p" if res_item.get("resolution") else "Auto",
                             "signCookie": det.get("signCookie") or res_item.get("signCookie") or "",
-                            "codec": res_item.get("codecName") or det.get("codecName") or "",
-                            "id": res_item.get("resourceId") or det.get("resourceId") or "",
-                            "duration": res_item.get("duration") or det.get("duration") or 0
+                            "id": res_item.get("resourceId") or det.get("resourceId") or ""
                         })
-        except Exception as e:
-            logger.error(f"Error extracting from resourceDetectors: {e}")
-            
+        except: pass
+
     global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
-    import requests
     
-    working_stream = None
-    working_cookie = None
-    official_quality = quality.lower() if quality else "720p"
-    
-    def prioritize_h264(st):
-        u = st.get("url", "").lower()
-        if "h265" in u or "x265" in u or "hev1" in u: return 10
-        if ".mp4" in u: return 0
-        if ".m3u8" in u: return 1
-        return 5
-    
-    prioritized_streams = sorted(streams, key=prioritize_h264)
-
-    for st in prioritized_streams:
-        url = st.get("url")
-        if not url: continue
-        if any(bad in url.lower() for bad in ["h265", "x265", "hev1"]):
-            continue
-        cookie = st.get("signCookie") or global_cookie or ""
-        try:
-            head_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
-            if head_res.status_code in [200, 206, 302]:
-                working_stream = st
-                working_cookie = cookie
-                break
-        except: continue
-
-    if not working_stream:
-        for st in prioritized_streams:
-            url = st.get("url")
-            if not url: continue
-            cookie = st.get("signCookie") or global_cookie or ""
-            try:
-                head_res = requests.head(url, headers={"User-Agent": "ExoPlayerLib/2.18.7", "Cookie": cookie}, timeout=3, verify=False)
-                if head_res.status_code in [200, 206, 302]:
-                    working_stream = st
-                    working_cookie = cookie
-                    break
-            except: continue
-
-    subtitles_source = data.get("subTitleList", [])
-    
-    if not working_stream:
-        try:
-            hdrs = {
-                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)",
-                "X-M-Version": "11.7.0"
-            }
-            
-            r_ids = []
-            try:
-                det_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id}, headers=hdrs)
-                detectors = (det_res.get('data') or {}).get('resourceDetectors') or []
-                for d in detectors:
-                    if d.get('resourceId'): r_ids.append(d.get('resourceId'))
-            except: pass
-
-            if not r_ids:
-                try:
-                    res_list = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/see-list-v2', params={'subjectId': subject_id, 'page': 1, 'pageSize': 20, 'seeType': 1}, headers=hdrs)
-                    r_items = (res_list.get('data') or {}).get('items') or []
-                    for item in r_items:
-                        if item.get('id'): r_ids.append(item.get('id'))
-                except: pass
-
-            for r_id in r_ids:
-                p_params = {'subjectId': subject_id, 'resourceId': r_id}
-                if not is_movie:
-                    p_params.update({'se': season, 'ep': episode, 'season': season, 'episode': episode})
-                
-                q_params = p_params.copy()
-                q_params['quality'] = official_quality
-                p_info = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/play-info', params=q_params, headers=hdrs)
-                p_data = p_info.get('data') or {}
-                p_streams = p_data.get('streamList') or p_data.get('streams') or []
-                
-                if not p_streams:
-                    p_info = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/play-info', params=p_params, headers=hdrs)
-                    p_data = p_info.get('data') or {}
-                    p_streams = p_data.get('streamList') or p_data.get('streams') or []
-
-                if p_streams:
-                    working_stream = p_streams[0]
-                    working_cookie = (
-                        p_info.get('signCookie') or 
-                        p_data.get('signCookie') or 
-                        working_stream.get('signCookie') or 
-                        s["client"].session.cookies.get("signCookie") or 
-                        global_cookie or ""
-                    )
-                    subtitles_source = p_data.get("subTitleList", []) or subtitles_source
-                    break
-        except Exception as e:
-            logger.warning(f"Resource Mirror Lookup Failed: {e}")
-
-    if not working_stream and streams:
-        working_stream = streams[0]
-        working_cookie = working_stream.get("signCookie") or global_cookie or ""
-
+    working_stream = streams[0] if streams else None
     if not working_stream:
         raise HTTPException(status_code=404, detail="No streams found.")
 
     raw_stream_url = working_stream.get("url", "")
+    working_cookie = working_stream.get("signCookie") or global_cookie or ""
     proxy_stream_url = f"/stream-proxy?u={quote(raw_stream_url)}&c={quote(working_cookie or '')}"
 
-    all_subtitles = subtitles_source
-    try:
-        ext_hdrs = {"User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)", "X-M-Version": "11.7.0"}
-        sub_resource_id = subject_id
-        try:
-            sd_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get', params={'subjectId': subject_id}, headers=ext_hdrs)
-            sd_detectors = sd_res.get('data', {}).get('resourceDetectors', [])
-            if sd_detectors:
-                sub_resource_id = sd_detectors[0].get('resourceId') or subject_id
-        except: pass
-        
-        ext_res = s["client"].request('GET', '/wefeed-mobile-bff/subject-api/get-ext-captions', 
-                                    params={'resourceId': sub_resource_id, 'subjectId': subject_id, 'episode': episode}, 
-                                    headers=ext_hdrs)
-        ext_list = ext_res.get("data", {}).get("extCaptions") or ext_res.get("data", {}).get("list") or []
-        for esub in ext_list:
-            if not any(x.get("url") == esub.get("url") for x in all_subtitles):
-                all_subtitles.append(esub)
-    except: pass
-
+    all_subtitles = data.get("subTitleList", [])
     best_sub = next((s.get("url") for s in all_subtitles if s.get("lan") == "en" or "english" in (s.get("lanName") or "").lower()), None)
 
     return {
+        "code": 0,
         "url": proxy_stream_url,
         "raw_url": raw_stream_url,
         "cookie": working_cookie,
@@ -1200,60 +1069,6 @@ def report_progress(req: ProgressReport, session_id: Optional[str] = Cookie(None
     if s["auth"].is_guest_mode:
         return {"status": "success"}
     return s["user"].report_history(req.subject_id, req.progress_ms, req.total_ms, req.status)
-
-@app.post("/launch-player")
-def launch_player(
-    player: str = Query("mpv"),
-    url: str = Query(...),
-    cookie: Optional[str] = Query(None),
-    subject_id: Optional[str] = Query(None),
-    season: Optional[int] = Query(None),
-    episode: Optional[int] = Query(None),
-    title: Optional[str] = Query(None),
-    cover: Optional[str] = Query(None),
-    start_time: Optional[int] = Query(0),
-    subtitle_url: Optional[str] = Query(None),
-    duration: Optional[int] = Query(0)
-):
-    logger.info(f"Launching external player: {player} for url: {url[:100]}... (start_time: {start_time})")
-    cmd = []
-    if player.lower() == "mpv":
-        cmd = ["mpv", url]
-        if title:
-            display_title = title
-            if season and episode:
-                display_title += f" S{season}E{episode}"
-            cmd.append(f"--title={display_title}")
-        if start_time and start_time > 0:
-            cmd.append(f"--start={start_time}")
-        if subtitle_url:
-            cmd.append(f"--sub-file={subtitle_url}")
-        cmd.append("--user-agent=ExoPlayerLib/2.18.7")
-        if cookie:
-            cmd.append(f"--http-header-fields=Cookie: {cookie}")
-    elif player.lower() == "vlc":
-        cmd = ["vlc", url]
-        if title:
-            display_title = title
-            if season and episode:
-                display_title += f" S{season}E{episode}"
-            cmd.extend(["--meta-title", display_title])
-        if start_time and start_time > 0:
-            cmd.extend(["--start-time", str(start_time)])
-        if subtitle_url:
-            cmd.extend(["--sub-file", subtitle_url])
-        cmd.extend(["--http-user-agent", "ExoPlayerLib/2.18.7"])
-    else:
-        return {"status": "error", "message": f"Unsupported player: {player}"}
-        
-    try:
-        creation_flags = 0
-        if os.name == 'nt':
-            creation_flags = 0x00000008 | 0x00000200
-        subprocess.Popen(cmd, creationflags=creation_flags, close_fds=True)
-        return {"status": "success", "message": f"Launched {player}"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 @app.get("/post/count/{subject_id}")
 def get_post_count(subject_id: str, session_id: Optional[str] = Cookie(None)):
