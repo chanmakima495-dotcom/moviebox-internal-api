@@ -93,16 +93,15 @@ export default function MovieDetail() {
       const data = res?.data || res;
       setMovie(data);
       
-      // Auto-set initial language/resource if available
+      // Auto-set language/resource
       if (data?.languages && data.languages.length > 0) {
         setSelectedLanguage(data.languages[0]);
       }
 
-      // Check Watchlist status from LocalStorage
+      // Check Watchlist
       if (typeof window !== 'undefined') {
         const localWl = JSON.parse(localStorage.getItem('user_watchlist') || '[]');
-        const isFav = localWl.some((x: any) => String(x.subjectId || x.id) === String(id));
-        setWatchlistActive(isFav);
+        setWatchlistActive(localWl.some((x: any) => String(x.subjectId || x.id) === String(id)));
       }
       
       if (data?.subjectType === 2 || data?.isCollection) {
@@ -126,11 +125,10 @@ export default function MovieDetail() {
         const subId = activeLang?.subjectId || id;
         const resourceId = activeLang?.id || undefined;
 
-        const isTv = movie?.subjectType === 2;
+        const isTv = movie?.subjectType === 2 || (seasons && seasons.length > 0);
         const finalSeason = isTv ? (seasonNum || 1) : 1;
         const finalEpisode = isTv ? (epNum || 1) : 1;
 
-        // Fetch Stream with proper Fallback Mirror routing
         const streamData = await movieApi.getStream(
           subId as string, 
           finalSeason, 
@@ -148,7 +146,7 @@ export default function MovieDetail() {
            stream.url = playUrl;
            setStreamInfo(stream);
 
-           // Auto-save progress to local history
+           // Auto-save to Local History
            if (typeof window !== 'undefined' && movie) {
              let curHist = JSON.parse(localStorage.getItem('user_history') || '[]');
              curHist = curHist.filter((x: any) => String(x.subjectId || x.id) !== String(id));
@@ -201,7 +199,6 @@ export default function MovieDetail() {
       const newActive = !watchlistActive;
       setWatchlistActive(newActive);
 
-      // Instantly sync to LocalStorage
       if (typeof window !== 'undefined') {
         let wl = JSON.parse(localStorage.getItem('user_watchlist') || '[]');
         if (newActive) {
@@ -449,7 +446,6 @@ export default function MovieDetail() {
         </>
       )}
 
-      {/* Language / Dub Selection Modal */}
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
            <div className="w-full max-w-md bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6">
@@ -486,7 +482,6 @@ export default function MovieDetail() {
         </div>
       )}
 
-      {/* Settings Modal */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
            <div className="w-full max-w-sm bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6 space-y-6">
