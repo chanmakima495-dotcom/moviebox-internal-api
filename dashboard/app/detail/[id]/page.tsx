@@ -6,7 +6,7 @@ import { movieApi } from '../../../lib/api';
 import { 
   Play, Plus, Star, ChevronLeft, 
   Clock, Calendar, Languages, Film, X, 
-  Settings, ChevronDown, Loader2
+  Settings, ChevronDown, Loader2, RefreshCw
 } from 'lucide-react';
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
@@ -77,6 +77,7 @@ export default function MovieDetail() {
   const [showLanguageModal, setShowLanguageModal] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<any>(null);
   const [showSeasonDropdown, setShowSeasonDropdown] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   
   const artInstance = useRef<any>(null);
 
@@ -92,6 +93,18 @@ export default function MovieDetail() {
       const data = res?.data || res;
       setMovie(data);
       
+      // Auto-set initial language/resource if available
+      if (data?.languages && data.languages.length > 0) {
+        setSelectedLanguage(data.languages[0]);
+      }
+
+      // Check Watchlist status from LocalStorage
+      if (typeof window !== 'undefined') {
+        const localWl = JSON.parse(localStorage.getItem('user_watchlist') || '[]');
+        const isFav = localWl.some((x: any) => String(x.subjectId || x.id) === String(id));
+        setWatchlistActive(isFav);
+      }
+      
       if (data?.subjectType === 2 || data?.isCollection) {
          const epRes = await movieApi.getEpisodes(id as string);
          const list = epRes?.data?.seasons || epRes?.data || [];
@@ -106,22 +119,24 @@ export default function MovieDetail() {
     }
   };
 
-  const loadStream = async (seasonNum?: number, epNum?: number | string, targetSubId?: string, resId?: string) => {
+  const loadStream = async (seasonNum?: number, epNum?: number | string, customLang?: any) => {
      try {
         setStreamLoading(true);
-        const subId = targetSubId || selectedLanguage?.subjectId || id;
-        const resourceId = resId || selectedLanguage?.id;
+        const activeLang = customLang !== undefined ? customLang : selectedLanguage;
+        const subId = activeLang?.subjectId || id;
+        const resourceId = activeLang?.id || undefined;
 
         const isTv = movie?.subjectType === 2;
         const finalSeason = isTv ? (seasonNum || 1) : 1;
         const finalEpisode = isTv ? (epNum || 1) : 1;
 
+        // Fetch Stream with proper Fallback Mirror routing
         const streamData = await movieApi.getStream(
           subId as string, 
           finalSeason, 
           finalEpisode as any, 
           '720p', 
-          resourceId || undefined
+          resourceId
         );
         
         const stream = streamData?.data || streamData;
@@ -132,6 +147,18 @@ export default function MovieDetail() {
            }
            stream.url = playUrl;
            setStreamInfo(stream);
+
+           // Auto-save progress to local history
+           if (typeof window !== 'undefined' && movie) {
+             let curHist = JSON.parse(localStorage.getItem('user_history') || '[]');
+             curHist = curHist.filter((x: any) => String(x.subjectId || x.id) !== String(id));
+             curHist.unshift({
+               ...movie,
+               subjectId: id,
+               seeTime: Math.floor(Date.now() / 1000)
+             });
+             localStorage.setItem('user_history', JSON.stringify(curHist));
+           }
         } else {
            setStreamInfo(null);
         }
@@ -168,17 +195,17 @@ export default function MovieDetail() {
      }
   };
 
-    const handleWatchlist = async () => {
+  const handleWatchlist = async () => {
     if (!movie) return;
     try {
       const newActive = !watchlistActive;
       setWatchlistActive(newActive);
-      
-      // Save to LocalStorage for instant UI feedback
+
+      // Instantly sync to LocalStorage
       if (typeof window !== 'undefined') {
         let wl = JSON.parse(localStorage.getItem('user_watchlist') || '[]');
         if (newActive) {
-          wl.push(movie);
+          wl.unshift({ ...movie, subjectId: id });
         } else {
           wl = wl.filter((x: any) => String(x.subjectId || x.id) !== String(id));
         }
@@ -188,7 +215,6 @@ export default function MovieDetail() {
       await movieApi.toggleWatchlist(id as string, newActive, movie.subjectType || 1);
     } catch (e) {}
   };
-
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen bg-black">
@@ -218,7 +244,10 @@ export default function MovieDetail() {
             <span className="font-bold text-sm tracking-wider uppercase truncate max-w-[200px] text-zinc-300">
               {movie?.title}
             </span>
-            <button className="p-2 hover:bg-zinc-800 rounded-full transition-colors text-zinc-400">
+            <button 
+              onClick={() => setShowSettingsModal(true)}
+              className="p-2 hover:bg-zinc-800 rounded-full transition-colors text-zinc-400"
+            >
               <Settings className="w-6 h-6" />
             </button>
           </div>
@@ -227,7 +256,7 @@ export default function MovieDetail() {
              {streamLoading && (
                 <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
                    <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
-                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Connecting Stream...</span>
+                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Connecting Stream Mirror...</span>
                 </div>
              )}
 
@@ -265,7 +294,7 @@ export default function MovieDetail() {
                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Stream buffering or selecting mirror</span>
                    <button 
                      onClick={() => loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode)}
-                     className="px-4 py-2 bg-amber-400 text-black font-bold rounded-xl text-xs transition-colors"
+                     className="px-6 py-2.5 bg-amber-400 text-black font-black rounded-xl text-xs uppercase tracking-wider transition-all active:scale-95 shadow-lg shadow-amber-400/20"
                    >
                      Retry Mirror
                    </button>
@@ -420,6 +449,7 @@ export default function MovieDetail() {
         </>
       )}
 
+      {/* Language / Dub Selection Modal */}
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
            <div className="w-full max-w-md bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6">
@@ -429,7 +459,11 @@ export default function MovieDetail() {
               </div>
               <div className="py-4 flex flex-col gap-2 max-h-[50vh] overflow-y-auto">
                  <button 
-                   onClick={() => { setSelectedLanguage(null); setShowLanguageModal(false); loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode); }}
+                   onClick={() => { 
+                     setSelectedLanguage(null); 
+                     setShowLanguageModal(false); 
+                     loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode, null); 
+                   }}
                    className="w-full text-left px-4 py-3 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-bold"
                  >
                     Original Audio
@@ -437,7 +471,11 @@ export default function MovieDetail() {
                  {movie.languages?.map((lang: any, idx: number) => (
                     <button 
                       key={idx}
-                      onClick={() => { setSelectedLanguage(lang); setShowLanguageModal(false); loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode, lang.subjectId, lang.id); }}
+                      onClick={() => { 
+                        setSelectedLanguage(lang); 
+                        setShowLanguageModal(false); 
+                        loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode, lang); 
+                      }}
                       className="w-full text-left px-4 py-3 bg-white/5 hover:bg-white/10 rounded-xl text-sm font-bold"
                     >
                        {lang.name}
@@ -447,6 +485,56 @@ export default function MovieDetail() {
            </div>
         </div>
       )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+           <div className="w-full max-w-sm bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6 space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-white/5">
+                 <h3 className="text-base font-bold flex items-center gap-2">
+                   <Settings size={18} className="text-amber-400" /> Player Settings
+                 </h3>
+                 <button onClick={() => setShowSettingsModal(false)} className="p-1.5 hover:bg-white/5 rounded-full text-zinc-400">
+                   <X size={18} />
+                 </button>
+              </div>
+
+              <div className="space-y-4">
+                 <div>
+                    <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Playback Speed</label>
+                    <div className="grid grid-cols-4 gap-2">
+                       {[0.5, 1, 1.25, 1.5].map((spd) => (
+                          <button
+                            key={spd}
+                            onClick={() => {
+                               if (artInstance.current) artInstance.current.playbackRate = spd;
+                               setShowSettingsModal(false);
+                            }}
+                            className="py-2 bg-white/5 hover:bg-amber-400 hover:text-black rounded-xl text-xs font-bold transition-colors"
+                          >
+                             {spd}x
+                          </button>
+                       ))}
+                    </div>
+                 </div>
+
+                 <div>
+                    <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Quick Actions</label>
+                    <button 
+                      onClick={() => {
+                         loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode);
+                         setShowSettingsModal(false);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-3 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-bold text-amber-400 transition-colors"
+                    >
+                       <RefreshCw size={14} /> Reload Stream Mirror
+                    </button>
+                 </div>
+              </div>
+           </div>
+        </div>
+      )}
+
     </div>
   );
 }
