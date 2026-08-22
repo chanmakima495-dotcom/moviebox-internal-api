@@ -6,9 +6,8 @@ import { movieApi } from '../../../lib/api';
 import { 
   Play, Plus, Star, ChevronLeft, 
   Clock, Calendar, Languages, Film, X, 
-  User, Tv, ChevronDown, Loader2
+  User, Tv, ChevronDown, Loader2, Settings
 } from 'lucide-react';
-import { CollectionGrid } from '../../../components/CollectionGrid';
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
 
