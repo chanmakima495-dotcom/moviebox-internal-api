@@ -756,76 +756,135 @@ def is_h264_compatible(stream_obj):
 
 # --- 100% BULLETPROOF STREAM RESOLVER ---
 @app.get("/stream/{subject_id}")
-def get_stream(subject_id: str, season: Optional[int] = None, episode: Optional[int] = None, quality: Optional[str] = "720p", resource_id: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
+def get_stream(
+    subject_id: str,
+    season: Optional[int] = None,
+    episode: Optional[int] = None,
+    quality: Optional[str] = "720p",
+    resource_id: Optional[str] = None,
+    session_id: Optional[str] = Cookie(None)
+):
     s = get_session(session_id)
+    
     try:
         subject_detail = s["content"].get_movie_detail(subject_id).get("data") or {}
-        is_movie = (str(subject_detail.get("subjectType") or subject_detail.get("type")) == "1")
-    except: 
-        is_movie = False
+        subject_type = str(subject_detail.get("subjectType") or subject_detail.get("type") or "1")
+        is_movie = subject_type == "1"
+    except:
+        is_movie = True
 
     res_se = None if is_movie else (season or 1)
     res_ep = None if is_movie else (episode or 1)
-    
-    # 1. Main play info
-    res = s["stream"].get_play_info(subject_id, season=res_se, episode=res_ep, resource_id=resource_id)
-    data = res.get("data", {})
-    raw_streams = data.get("streamList") or data.get("streams") or []
-    
-    # 2. Resource Detectors check
+
+    # --- চেষ্টা ১: Main play info ---
+    raw_streams = []
+    global_cookie = ""
+    all_subtitles = []
+
+    try:
+        res = s["stream"].get_play_info(
+            subject_id, season=res_se, episode=res_ep, resource_id=resource_id
+        )
+        data = res.get("data", {})
+        raw_streams = data.get("streamList") or data.get("streams") or []
+        global_cookie = (
+            res.get("signCookie") or
+            data.get("signCookie") or
+            s["client"].session.cookies.get("signCookie") or
+            s["auth"].token or ""
+        )
+        all_subtitles = data.get("subTitleList") or []
+    except Exception as e:
+        logger.error(f"play_info error: {e}")
+
+    # --- চেষ্টা ২: v_detail fallback ---
     if not raw_streams:
         try:
-            detectors = subject_detail.get("resourceDetectors") or []
+            v_res = s["client"].request(
+                'POST', '/index/video/v_detail',
+                data={'subjectId': subject_id, 'carrier': '301', 'quality': quality}
+            )
+            v_data = v_res.get("data") or {}
+            raw_streams = v_data.get("streamList") or v_data.get("streams") or []
+            if not global_cookie:
+                global_cookie = v_data.get("signCookie") or ""
+        except Exception as e:
+            logger.error(f"v_detail fallback error: {e}")
+
+    # --- চেষ্টা ৩: resourceDetectors ---
+    if not raw_streams:
+        try:
+            det_res = s["client"].request(
+                'GET', '/wefeed-mobile-bff/subject-api/get',
+                params={'subjectId': subject_id}
+            )
+            detectors = (det_res.get('data') or {}).get('resourceDetectors') or []
             for det in detectors:
-                if resource_id and str(det.get("resourceId")) != str(resource_id): continue
+                if resource_id and str(det.get("resourceId")) != str(resource_id):
+                    continue
                 for res_item in (det.get("resolutionList") or []):
                     stream_url = res_item.get("resourceLink") or res_item.get("downloadUrl")
                     if stream_url:
                         raw_streams.append({
                             "url": stream_url,
-                            "quality": f"{res_item.get('resolution')}p" if res_item.get("resolution") else "Auto",
+                            "quality": f"{res_item.get('resolution', 'Auto')}p",
                             "signCookie": det.get("signCookie") or res_item.get("signCookie") or "",
                             "id": res_item.get("resourceId") or det.get("resourceId") or "",
-                            "codec": res_item.get("codecName") or det.get("codecName") or ""
+                            "codec": res_item.get("codecName") or ""
                         })
-        except: pass
+        except Exception as e:
+            logger.error(f"detector fallback error: {e}")
 
-    # 3. Direct video resolution mirror check
     if not raw_streams:
-        try:
-            v_res = s["client"].request('POST', '/index/video/v_detail', data={'subjectId': subject_id, 'carrier': '301', 'quality': quality})
-            v_data = v_res.get("data") or {}
-            raw_streams = v_data.get("streamList") or v_data.get("streams") or []
-        except: pass
+        raise HTTPException(status_code=404, detail="No streams found for this content.")
 
-    # Filter for H.264 compatible videos first
-    compatible_streams = [st for st in raw_streams if is_h264_compatible(st)]
-    streams = compatible_streams if compatible_streams else raw_streams
+    # --- H264 prefer ---
+    compatible = [st for st in raw_streams if is_h264_compatible(st)]
+    streams = compatible if compatible else raw_streams
 
-    global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
-    working_stream = streams[0] if streams else None
+    # Quality match
+    preferred = next(
+        (st for st in streams if quality and quality.lower() in str(st.get("quality", "")).lower()),
+        streams[0]
+    )
+
+    raw_url = preferred.get("url", "")
+    cookie = preferred.get("signCookie") or global_cookie or ""
+
+    if not raw_url:
+        raise HTTPException(status_code=404, detail="Stream URL is empty.")
+
+    is_hls = ".m3u8" in raw_url.lower()
     
-    if not working_stream:
-        raise HTTPException(status_code=404, detail="No streams found.")
+    # Proxy URL — absolute base URL দিয়ে বানাও
+    encoded_url = quote(raw_url, safe='')
+    encoded_cookie = quote(cookie, safe='')
+    proxy_url = f"/stream-proxy?u={encoded_url}&c={encoded_cookie}"
 
-    raw_stream_url = working_stream.get("url", "")
-    working_cookie = working_stream.get("signCookie") or global_cookie or ""
-    proxy_stream_url = f"/stream-proxy?u={quote(raw_stream_url)}&c={quote(working_cookie or '')}"
+    best_sub = next(
+        (sub.get("url") for sub in all_subtitles
+         if sub.get("lan") == "en" or "english" in (sub.get("lanName") or "").lower()),
+        None
+    )
 
-    all_subtitles = data.get("subTitleList", [])
-    best_sub = next((sub.get("url") for sub in all_subtitles if sub.get("lan") == "en" or "english" in (sub.get("lanName") or "").lower()), None)
+    quality_list = []
+    seen = set()
+    for st in streams:
+        q = st.get("quality")
+        if q and q not in seen:
+            quality_list.append(q)
+            seen.add(q)
 
     return {
         "code": 0,
-        "url": proxy_stream_url,
-        "raw_url": raw_stream_url,
-        "cookie": working_cookie,
-        "duration": 3600,
+        "url": proxy_url,
+        "raw_url": raw_url,
+        "cookie": cookie,
+        "isHls": is_hls,
         "subtitles": all_subtitles,
         "subtitle_url": best_sub,
-        "isHls": raw_stream_url.lower().endswith(".m3u8") or ".m3u8" in raw_stream_url.lower(), 
-        "streamId": working_stream.get("id"),
-        "qualityList": list(set([st.get("quality") for st in streams if st.get("quality")])),
+        "streamId": preferred.get("id"),
+        "qualityList": quality_list,
         "episode": episode,
         "season": season,
         "is_vip": 1
