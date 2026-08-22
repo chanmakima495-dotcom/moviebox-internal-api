@@ -754,41 +754,62 @@ def get_episodes(series_id: str, session_id: Optional[str] = Cookie(None)):
             mapped_seasons.append({"seasonNumber": num, "episodes": eps})
     return {"code": 0, "data": {"seasons": mapped_seasons}}
 
-# --- HIGH FIDELITY STREAM EXTRACTION WITH PROXY ROUTE ---
+def is_h264_compatible(stream_obj):
+    url = str(stream_obj.get("url", "")).lower()
+    codec = str(stream_obj.get("codec") or stream_obj.get("codecName") or "").lower()
+    if "h265" in codec or "hevc" in codec or "x265" in codec or "h265" in url or "hevc" in url:
+        return False
+    return True
+
+# --- HIGH FIDELITY STREAM EXTRACTION WITH PROXY & CODEC FALLBACK ---
 @app.get("/stream/{subject_id}")
-def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Optional[str] = "720p", resource_id: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
+def get_stream(subject_id: str, season: Optional[int] = None, episode: Optional[int] = None, quality: Optional[str] = "720p", resource_id: Optional[str] = None, session_id: Optional[str] = Cookie(None)):
     s = get_session(session_id)
     try:
         subject_detail = s["content"].get_movie_detail(subject_id).get("data") or {}
         is_movie = (str(subject_detail.get("subjectType") or subject_detail.get("type")) == "1")
     except: is_movie = False
 
-    res_se = None if is_movie else season
-    res_ep = None if is_movie else episode
+    res_se = None if is_movie else (season or 1)
+    res_ep = None if is_movie else (episode or 1)
     
+    # 1. Main play info stream request
     res = s["stream"].get_play_info(subject_id, season=res_se, episode=res_ep, resource_id=resource_id)
     data = res.get("data", {})
-    streams = data.get("streamList") or data.get("streams") or []
+    raw_streams = data.get("streamList") or data.get("streams") or []
     
-    if not streams:
+    # 2. Resource Detectors check
+    if not raw_streams:
         try:
             detectors = subject_detail.get("resourceDetectors") or []
             for det in detectors:
                 if resource_id and str(det.get("resourceId")) != str(resource_id): continue
-                for res_item in det.get("resolutionList") or []:
+                for res_item in (det.get("resolutionList") or []):
                     stream_url = res_item.get("resourceLink") or res_item.get("downloadUrl")
                     if stream_url:
-                        streams.append({
+                        raw_streams.append({
                             "url": stream_url,
                             "quality": f"{res_item.get('resolution')}p" if res_item.get("resolution") else "Auto",
                             "signCookie": det.get("signCookie") or res_item.get("signCookie") or "",
-                            "id": res_item.get("resourceId") or det.get("resourceId") or ""
+                            "id": res_item.get("resourceId") or det.get("resourceId") or "",
+                            "codec": res_item.get("codecName") or det.get("codecName") or ""
                         })
         except: pass
 
+    # 3. Direct video resolution mirror check
+    if not raw_streams:
+        try:
+            v_res = s["client"].request('POST', '/index/video/v_detail', data={'subjectId': subject_id, 'carrier': '301', 'quality': quality})
+            v_data = v_res.get("data") or {}
+            raw_streams = v_data.get("streamList") or v_data.get("streams") or []
+        except: pass
+
+    compatible_streams = [st for st in raw_streams if is_h264_compatible(st)]
+    streams = compatible_streams if compatible_streams else raw_streams
+
     global_cookie = res.get("signCookie") or data.get("signCookie") or s["client"].session.cookies.get("signCookie") or s["auth"].token
-    
     working_stream = streams[0] if streams else None
+    
     if not working_stream:
         raise HTTPException(status_code=404, detail="No streams found.")
 
@@ -820,25 +841,23 @@ def get_stream(subject_id: str, season: int = 1, episode: int = 1, quality: Opti
 async def stream_proxy(request: Request, u: str, c: Optional[str] = ""):
     req_hdrs = {
         "User-Agent": "ExoPlayerLib/2.18.7",
+        "Referer": "https://www.moviebox.ph/",
         "Cookie": c or ""
     }
     if "range" in request.headers:
         req_hdrs["Range"] = request.headers["range"]
 
-    client = httpx.AsyncClient(verify=False)
+    client = httpx.AsyncClient(verify=False, timeout=30.0)
     req = client.build_request("GET", u, headers=req_hdrs)
     r = await client.send(req, stream=True)
 
     headers = {
         "Accept-Ranges": "bytes",
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
     }
-    if "content-range" in r.headers:
-        headers["Content-Range"] = r.headers["content-range"]
-    if "content-length" in r.headers:
-        headers["Content-Length"] = r.headers["content-length"]
-    if "content-type" in r.headers:
-        headers["Content-Type"] = r.headers["content-type"]
+    for h in ["content-range", "content-length", "content-type"]:
+        if h in r.headers: headers[h.title()] = r.headers[h]
 
     return StreamingResponse(
         r.aiter_bytes(chunk_size=1024 * 512),
