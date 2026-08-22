@@ -6,7 +6,7 @@ import { movieApi } from '../../../lib/api';
 import { 
   Play, Plus, Star, ChevronLeft, 
   Clock, Calendar, Languages, Film, X, 
-  User, Tv, ChevronDown, Loader2, Settings
+  Settings, ChevronDown, Loader2
 } from 'lucide-react';
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
@@ -15,9 +15,28 @@ function ArtPlayer({ option, getInstance, className }: any) {
   const artRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!artRef.current || !option?.url) return;
+
+    const isHlsStream = option.url.includes('.m3u8') || option.isHls;
+
     const art = new Artplayer({
       ...option,
-      container: artRef.current!,
+      container: artRef.current,
+      type: isHlsStream ? 'm3u8' : 'mp4',
+      customType: {
+        m3u8: function (video: HTMLVideoElement, url: string, artInstance: any) {
+          if (Hls.isSupported()) {
+            if (artInstance.hls) artInstance.hls.destroy();
+            const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            artInstance.hls = hls;
+            artInstance.on('destroy', () => hls.destroy());
+          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+          }
+        }
+      }
     });
 
     if (getInstance && typeof getInstance === 'function') {
@@ -29,7 +48,7 @@ function ArtPlayer({ option, getInstance, className }: any) {
         art.destroy(false);
       }
     };
-  }, [option.url]);
+  }, [option?.url]);
 
   return <div ref={artRef} className={className}></div>;
 }
@@ -41,7 +60,6 @@ export default function MovieDetail() {
   const [loading, setLoading] = useState(true);
   const [watchlistActive, setWatchlistActive] = useState(false);
   
-  // Streaming & Player States
   const [isPlaying, setIsPlaying] = useState(false);
   const [seasons, setSeasons] = useState<any[]>([]);
   const [selectedSeasonIdx, setSelectedSeasonIdx] = useState(0);
@@ -82,16 +100,20 @@ export default function MovieDetail() {
     }
   };
 
-  const loadStream = async (seasonNum: number, epNum: number | string, targetSubId?: string, resId?: string) => {
+  const loadStream = async (seasonNum?: number, epNum?: number | string, targetSubId?: string, resId?: string) => {
      try {
         setStreamLoading(true);
         const subId = targetSubId || selectedLanguage?.subjectId || id;
         const resourceId = resId || selectedLanguage?.id;
 
+        const isTv = movie?.subjectType === 2;
+        const finalSeason = isTv ? (seasonNum || 1) : 1;
+        const finalEpisode = isTv ? (epNum || 1) : 1;
+
         const streamData = await movieApi.getStream(
           subId as string, 
-          seasonNum || 1, 
-          epNum as any || 1, 
+          finalSeason, 
+          finalEpisode as any, 
           '720p', 
           resourceId || undefined
         );
@@ -104,10 +126,13 @@ export default function MovieDetail() {
            }
            stream.url = playUrl;
            setStreamInfo(stream);
+        } else {
+           setStreamInfo(null);
         }
         setStreamLoading(false);
      } catch (e) {
-        console.error("Stream Error:", e);
+        console.error("Stream Load Error:", e);
+        setStreamInfo(null);
         setStreamLoading(false);
      }
   };
@@ -159,12 +184,10 @@ export default function MovieDetail() {
   );
 
   return (
-    <div className="relative min-h-screen bg-[#07090e] text-white overflow-x-hidden pb-20 font-sans">
+    <div className="relative min-h-screen bg-[#07090e] text-white overflow-x-hidden pb-20 font-sans select-none">
       
-      {/* If Watch Now is clicked, show Native Player UI */}
       {isPlaying ? (
         <div className="flex flex-col min-h-screen">
-          {/* Top Bar */}
           <div className="w-full flex items-center justify-between px-4 py-3 bg-[#07090e] border-b border-zinc-900 sticky top-0 z-50">
             <button 
               onClick={() => setIsPlaying(false)} 
@@ -180,12 +203,11 @@ export default function MovieDetail() {
             </button>
           </div>
 
-          {/* 16:9 Video Player */}
           <div className="w-full max-w-4xl mx-auto aspect-video bg-black relative shadow-2xl border-b border-zinc-900">
              {streamLoading && (
                 <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
                    <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Loading Stream...</span>
+                   <span className="text-xs uppercase tracking-widest text-zinc-400 font-bold">Connecting Stream Mirror...</span>
                 </div>
              )}
 
@@ -200,6 +222,7 @@ export default function MovieDetail() {
                      pip: true,
                      fullscreen: true,
                      fullscreenWeb: true,
+                     isHls: streamInfo.isHls,
                      moreVideoAttr: { crossOrigin: 'anonymous', playsInline: true },
                      subtitle: {
                        url: streamInfo.subtitles && streamInfo.subtitles.length > 0 
@@ -208,31 +231,25 @@ export default function MovieDetail() {
                        type: 'vtt',
                        style: { color: '#fff', fontSize: '18px' },
                        encoding: 'utf-8'
-                     },
-                     customType: {
-                       m3u8: function (video: HTMLVideoElement, url: string, art: any) {
-                         if (Hls.isSupported()) {
-                           if (art.hls) art.hls.destroy();
-                           const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
-                           hls.loadSource(url);
-                           hls.attachMedia(video);
-                           art.hls = hls;
-                           art.on('destroy', () => hls.destroy());
-                         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                           video.src = url;
-                         }
-                       }
                      }
                    }}
                    getInstance={(art: any) => { artInstance.current = art; }}
                    className="w-full h-full"
                 />
              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-zinc-950 text-zinc-500 text-xs">Stream unavailable</div>
+                <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-950 text-zinc-400 gap-3 p-6 text-center">
+                   <Film className="w-10 h-10 text-zinc-600" />
+                   <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Stream buffering or selecting mirror</span>
+                   <button 
+                     onClick={() => loadStream(seasons[selectedSeasonIdx]?.seasonNumber || 1, currentEpisode)}
+                     className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-xs font-bold text-white transition-colors"
+                   >
+                     Retry Mirror
+                   </button>
+                </div>
              )}
           </div>
 
-          {/* Season & Episodes Workspace */}
           <div className="w-full max-w-4xl mx-auto px-4 py-6 flex-1">
              <h4 className="text-xs font-bold text-zinc-400 tracking-wider mb-4 uppercase">Resource / Season</h4>
              <div className="flex flex-wrap items-center gap-3 mb-6 relative">
@@ -269,7 +286,6 @@ export default function MovieDetail() {
                 )}
              </div>
 
-             {/* Episode Grid */}
              {episodes.length > 0 ? (
                 <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
                    {episodes.map((ep: any, idx: number) => {
@@ -302,7 +318,6 @@ export default function MovieDetail() {
           </div>
         </div>
       ) : (
-        /* Default Details Page */
         <>
           <div className="absolute top-0 left-0 w-full h-[70vh] overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-t from-[#07090e] via-black/40 to-transparent z-10" />
@@ -387,7 +402,6 @@ export default function MovieDetail() {
         </>
       )}
 
-      {/* Language Modal */}
       {showLanguageModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
            <div className="w-full max-w-md bg-zinc-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl p-6">
