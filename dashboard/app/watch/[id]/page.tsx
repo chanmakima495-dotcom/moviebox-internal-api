@@ -31,6 +31,7 @@ export default function WatchPage() {
   const episode = parseInt(searchParams.get('e') || '1');
 
   const [selectedQuality, setSelectedQuality] = useState('720P');
+  const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null); // ← NEW
   const [subtitlesOn, setSubtitlesOn] = useState(false);
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [subtitles, setSubtitles] = useState<any[]>([]);
@@ -38,6 +39,7 @@ export default function WatchPage() {
   
   const [streamData, setStreamData] = useState<any>(null);
   const [movie, setMovie] = useState<any>(null);
+  const [resources, setResources] = useState<any[]>([]); // ← NEW: dubbed/subbed list
   const [loading, setLoading] = useState(true);
   const [showPlayer, setShowPlayer] = useState(false);
   const [resumeTime, setResumeTime] = useState(0);
@@ -55,12 +57,18 @@ export default function WatchPage() {
 
   useEffect(() => {
     if (id) {
-       fetchStream();
        fetchMetadata();
        fetchSubtitles();
        checkAuth();
     }
-  }, [id, season, episode, selectedQuality]);
+  }, [id, season, episode]);
+
+  // Re-fetch stream whenever quality OR resource changes
+  useEffect(() => {
+    if (id) {
+      fetchStream();
+    }
+  }, [id, season, episode, selectedQuality, selectedResourceId]);
 
   const checkAuth = async () => {
     try {
@@ -125,15 +133,23 @@ export default function WatchPage() {
   const fetchMetadata = async () => {
     try {
       const res = await movieApi.getDetail(id as string);
-      if (res.code === 0) setMovie(res.data);
+      if (res.code === 0) {
+        setMovie(res.data);
+        // Extract resource list (dubbed/subbed variants) from metadata if available
+        const resList = res.data?.resource || res.data?.resources || [];
+        setResources(resList);
+        // Auto-select first resource if none selected
+        if (resList.length > 0 && !selectedResourceId) {
+          setSelectedResourceId(resList[0].id || resList[0].resourceId || null);
+        }
+      }
     } catch (e) {}
   };
 
   const normalizeSubtitle = (sub: any) => {
     const rawUrl = sub.url || sub.subPath || '';
-    // Proxy ALL subtitles to avoid taining the canvas during screenshots/thumbnails
-    const proxiedUrl = rawUrl ? `https://movieboxapi-xp54.onrender.com/sub-proxy?u=${encodeURIComponent(rawUrl)}` : '';
-   
+    const proxiedUrl = rawUrl ? `http://localhost:8000/sub-proxy?u=${encodeURIComponent(rawUrl)}` : '';
+    
     return {
         sid: sub.id || sub.sid || Math.random().toString(),
         language: sub.lanName || sub.language || sub.lan || 'Unknown',
@@ -149,12 +165,27 @@ export default function WatchPage() {
      } catch (e) {}
   };
 
-
   const fetchStream = async () => {
     setLoading(true);
+    setPlayerError(null);
     try {
-      const res = await movieApi.getStream(id as string, season, episode, selectedQuality);
+      // ← KEY FIX: pass selectedResourceId as 4th (or named) param
+      const res = await movieApi.getStream(
+        id as string,
+        season,
+        episode,
+        selectedQuality,
+        selectedResourceId ?? undefined   // ← resource_id goes here
+      );
       setStreamData(res);
+
+      // Pull dubbed/subbed resource list from stream response if not already loaded
+      if (res.resources && res.resources.length > 0) {
+        setResources(res.resources);
+        if (!selectedResourceId) {
+          setSelectedResourceId(res.resources[0].id || res.resources[0].resourceId || null);
+        }
+      }
       
       if (res.streamId) {
           try {
@@ -171,7 +202,7 @@ export default function WatchPage() {
       if (res.subtitles && res.subtitles.length > 0) {
           setSubtitles(prev => {
              const mapped = res.subtitles.map(normalizeSubtitle);
-             const existing = new Set(prev.map(p => p.sid));
+             const existing = new Set(prev.map((p: any) => p.sid));
              const newSubs = mapped.filter((s: any) => !existing.has(s.sid));
              return [...newSubs, ...prev];
           });
@@ -184,7 +215,7 @@ export default function WatchPage() {
     setIsTranscoding(true);
     setPlayerError(null);
     try {
-        const compatUrl = `https://movieboxapi-xp54.onrender.com/play-compat/${id}?season=${season}&episode=${episode}&quality=${selectedQuality}`;
+        const compatUrl = `http://localhost:8000/play-compat/${id}?season=${season}&episode=${episode}&quality=${selectedQuality}${selectedResourceId ? `&resource_id=${selectedResourceId}` : ''}`;
         setStreamData({
             url: compatUrl,
             cookie: '', 
@@ -198,15 +229,12 @@ export default function WatchPage() {
   };
 
   const handlePlayerError = (error: any) => {
-    // If we're already using the transcode pipe, don't show another error or try to transcode again
     if (streamData?.isTranscoded) return;
-
     console.warn("Codec incompatibility detected. Swapping to High Compatibility (Transcode) Mode...");
     handleTranscodeFailover();
   };
 
   const handleProgress = (time: number) => {
-      // Throttled history saving could be added here
       if (Math.floor(time) % 10 === 0 && streamData?.streamId) {
           movieApi.saveHistoryPosition(id as string, streamData.streamId, Math.floor(time * 1000)).catch(()=>{});
       }
@@ -214,9 +242,9 @@ export default function WatchPage() {
 
   const downloadStream = () => {
      const movieTitle = encodeURIComponent(movie?.title || 'Movie');
-     const downloadUrl = `https://movieboxapi-xp54.onrender.com/download/${id}?season=${season}&episode=${episode}&quality=${selectedQuality}&title=${movieTitle}`;
+     const resourceParam = selectedResourceId ? `&resource_id=${selectedResourceId}` : '';
+     const downloadUrl = `http://localhost:8000/download/${id}?season=${season}&episode=${episode}&quality=${selectedQuality}${resourceParam}&title=${movieTitle}`;
      
-     // PRO-LEVEL SILENT DOWNLOAD
      const link = document.createElement('a');
      link.href = downloadUrl;
      link.setAttribute('download', `${movie?.title || 'Movie'}.mp4`);
@@ -238,7 +266,7 @@ export default function WatchPage() {
             if (activeSub) subUrl = activeSub.subPath;
         }
 
-        await axios.post('https://movieboxapi-xp54.onrender.com/launch-player', null, {
+        await axios.post('http://localhost:8000/launch-player', null, {
             params: {
                 player: player,
                 url: streamData.url,
@@ -250,6 +278,7 @@ export default function WatchPage() {
                 cover: movie?.cover,
                 start_time: startTime,
                 subtitle_url: subUrl,
+                resource_id: selectedResourceId ?? undefined, // ← passed to external player too
                 duration: Math.floor((streamData.runtime ? parseInt(streamData.runtime) : (movie?.runtime ? parseInt(movie.runtime) : 0)) * 60)
             }
         });
@@ -414,7 +443,7 @@ export default function WatchPage() {
                </button>
             </div>
 
-            {/* Quality Swiper */}
+            {/* Quality + Resource Swiper */}
             <div className="bg-zinc-900 p-6 rounded-[2.5rem] border border-white/5 shadow-xl flex flex-col justify-center gap-4">
                 <div className="flex items-center justify-between">
                     <div className="text-left">
@@ -436,6 +465,32 @@ export default function WatchPage() {
                         </button>
                      ))}
                 </div>
+
+                {/* ← NEW: Resource / Dubbed switcher */}
+                {resources.length > 1 && (
+                  <div className="flex flex-col gap-2 pt-2 border-t border-white/5">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-600 leading-none">Audio Track</p>
+                    <div className="flex flex-wrap gap-2">
+                      {resources.map((r: any) => {
+                        const rid = r.id || r.resourceId;
+                        const label = r.label || r.name || r.lan || rid;
+                        return (
+                          <button
+                            key={rid}
+                            onClick={() => { setSelectedResourceId(rid); setShowPlayer(false); }}
+                            className={`flex-1 py-3 rounded-xl text-[10px] font-black transition-all border border-white/5 truncate ${
+                              selectedResourceId === rid
+                                ? 'bg-yellow-500 text-black shadow-lg shadow-yellow-500/20'
+                                : 'bg-white/5 text-zinc-500 hover:bg-white/10'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
             </div>
          </div>
 
@@ -535,6 +590,8 @@ export default function WatchPage() {
                </div>
             </div>
          )}
+
+         {/* LOGIN MODAL */}
          {showLoginModal && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
                <div className="absolute inset-0 bg-black/90 backdrop-blur-3xl" onClick={() => setShowLoginModal(false)} />
