@@ -25,7 +25,7 @@ app = FastAPI(title="MovieBox Unofficial API Backend")
 # Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://movieboxapi-xp54.onrender.com"],
+    allow_origins=[""],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
