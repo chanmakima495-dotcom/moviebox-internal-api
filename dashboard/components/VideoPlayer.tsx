@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, memo } from 'react';
 import Artplayer from 'artplayer';
+import Hls from 'hls.js';
 
 declare global {
   interface Window {
-    Hls: any;
     dashjs: any;
   }
 }
@@ -39,23 +39,25 @@ const VideoPlayer = memo(({
     if (artInstance.current) return;
 
     const getProxiedUrl = (u: string, cookieStr: string, start?: number) => {
-        let cleanUrl = u;
-        if (u.includes('proxy-media?url=')) {
-            const up = new URL(u);
-            cleanUrl = up.searchParams.get('url') || u;
-        }
-        if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
-            const up = new URL(cleanUrl);
-            if (start && start > 0) up.searchParams.set('start_time', start.toString());
-            else up.searchParams.delete('start_time');
-            return up.toString();
-        }
-        return cleanUrl;
+      let cleanUrl = u;
+      if (u.includes('proxy-media?url=')) {
+        const up = new URL(u);
+        cleanUrl = up.searchParams.get('url') || u;
+      }
+      if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
+        const up = new URL(cleanUrl);
+        if (start && start > 0) up.searchParams.set('start_time', start.toString());
+        else up.searchParams.delete('start_time');
+        return up.toString();
+      }
+      return cleanUrl;
     };
 
     const initialUrl = getProxiedUrl(url, cookie, startTime);
     seekOffset.current = startTime;
-    const inferredType = initialUrl.includes('.mpd') || initialUrl.includes('.manifest') ? 'mpd' : (initialUrl.includes('.m3u8') ? 'm3u8' : 'mp4');
+    const inferredType = initialUrl.includes('.mpd') || initialUrl.includes('.manifest') 
+      ? 'mpd' 
+      : (initialUrl.includes('.m3u8') ? 'm3u8' : 'mp4');
 
     const art = new Artplayer({
       container: artRef.current,
@@ -91,31 +93,58 @@ const VideoPlayer = memo(({
       },
       customType: {
         m3u8: function (video: HTMLMediaElement, url: string, art: any) {
-          const Hls = window.Hls;
-          if (Hls && Hls.isSupported()) {
+          // ✅ এখন window.Hls এর বদলে import করা Hls use হচ্ছে
+          if (Hls.isSupported()) {
             if (art.hls) art.hls.destroy();
+
             const hls = new Hls({
-              xhrSetup: function (xhr: any) {
-                xhr.setRequestHeader('User-Agent', 'ExoPlayerLib/2.18.7');
-                if (cookie) {
-                  xhr.setRequestHeader('Cookie', cookie);
+              enableWorker: true,
+              lowLatencyMode: false,
+              backBufferLength: 30,
+              maxBufferLength: 60,
+              maxMaxBufferLength: 120,
+              // ✅ Cookie header proxy দিয়ে যাচ্ছে, XHR header দরকার নেই
+            });
+
+            hls.on(Hls.Events.ERROR, function (_event: any, data: any) {
+              if (data.fatal) {
+                console.warn("HLS fatal error:", data.type, data.details);
+                switch (data.type) {
+                  case Hls.ErrorTypes.NETWORK_ERROR:
+                    // Network error — retry
+                    console.warn("Network error, trying to recover...");
+                    hls.startLoad();
+                    break;
+                  case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.warn("Media error, trying to recover...");
+                    hls.recoverMediaError();
+                    break;
+                  default:
+                    hls.destroy();
+                    if (onError) onError(data);
+                    break;
                 }
               }
             });
-            hls.on(Hls.Events.ERROR, function (event: any, data: any) {
-              if (data.fatal) {
-                console.warn("HLS fatal error:", data);
-                if (onError) onError(data);
-              }
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              console.info("[HLS] Manifest parsed, playing...");
             });
+
             hls.loadSource(url);
             hls.attachMedia(video);
             art.hls = hls;
             art.on('destroy', () => hls.destroy());
+
           } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Safari native HLS
             video.src = url;
+          } else {
+            console.error("[HLS] Not supported in this browser");
+            if (onError) onError(new Error("HLS not supported"));
           }
         },
+
         mpd: function (video: HTMLMediaElement, url: string, art: any) {
           const dashjs = window.dashjs;
           if (dashjs) {
@@ -155,8 +184,7 @@ const VideoPlayer = memo(({
 
     artInstance.current = art;
 
-    // === VIRTUAL TIMELINE ENGINE (for transcoded/live FFMPEG streams) ===
-    // This runs AFTER the player is created, so we can safely access art.video
+    // === VIRTUAL TIMELINE ENGINE ===
     art.on('ready', () => {
       const isTranscoded = art.url.includes('play-compat');
       if (!isTranscoded || !duration || duration <= 0) return;
@@ -164,7 +192,6 @@ const VideoPlayer = memo(({
       try {
         const nativeCT = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
 
-        // MOCK currentTime so ArtPlayer sees the "virtual" global position
         Object.defineProperty(art.video, 'currentTime', {
           get: () => {
             const realTime = nativeCT?.get?.call(art.video) ?? 0;
@@ -191,14 +218,12 @@ const VideoPlayer = memo(({
           configurable: true,
         });
 
-        // MOCK duration so ArtPlayer allows the full seekable range
         Object.defineProperty(art.video, 'duration', {
           get: () => duration,
           configurable: true,
         });
         art.emit('video:durationchange');
 
-        // Continuous UI sync loop — keeps the labels correct as the stream plays
         const syncUI = () => {
           try {
             if (!isSeekingInternal.current) {
@@ -216,7 +241,6 @@ const VideoPlayer = memo(({
               if (pi) pi.style.left = `${p}%`;
             }
 
-            // Re-lock duration in case the browser resets it
             if (Math.abs(art.video.duration - duration) > 1) {
               Object.defineProperty(art.video, 'duration', { get: () => duration, configurable: true });
               art.emit('video:durationchange');
@@ -234,18 +258,17 @@ const VideoPlayer = memo(({
 
     art.on('video:timeupdate', () => {
       if (!isSeekingInternal.current && onProgress) {
-        // art.video.currentTime is intercepted for transcoded streams, so this auto-reports the correct virtual time
         onProgress(art.video.currentTime);
       }
     });
 
     art.on('video:error', (e) => {
-      console.warn("Video element error detected inside VideoPlayer component:", e);
+      console.warn("Video element error:", e);
       if (onError) onError(e);
     });
 
     art.on('error', (err) => {
-      console.warn("Artplayer general error detected inside VideoPlayer component:", err);
+      console.warn("Artplayer error:", err);
       if (onError) onError(err);
     });
 
@@ -255,9 +278,9 @@ const VideoPlayer = memo(({
         artInstance.current = null;
       }
     };
-  }, []); // PIN — only mount once
+  }, []);
 
-  // Silent subtitle sync without reloading the video
+  // Subtitle sync
   useEffect(() => {
     if (artInstance.current) {
       const art = artInstance.current;
@@ -270,7 +293,12 @@ const VideoPlayer = memo(({
     }
   }, [subtitleUrl]);
 
-  return <div ref={artRef} className="w-full h-full rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/10" />;
+  return (
+    <div 
+      ref={artRef} 
+      className="w-full h-full rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/10" 
+    />
+  );
 });
 
 export default VideoPlayer;
